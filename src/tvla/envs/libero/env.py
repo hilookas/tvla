@@ -14,9 +14,7 @@ from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 
 from robosuite.utils.camera_utils import get_camera_intrinsic_matrix, get_camera_extrinsic_matrix, get_real_depth_map
-from robosuite.utils.transform_utils import axisangle2quat, quat2mat, mat2quat, quat2axisangle
-from robosuite.utils.control_utils import set_goal_orientation, set_goal_position
-from pytransform3d.transformations import invert_transform
+from .transform import libero2uea_state, uea2libero_action
 
 # Set numpy print options for better readability
 np.set_printoptions(precision=6, suppress=True)
@@ -89,7 +87,16 @@ def draw_xyz_axis(color, ob_in_cam, K=np.eye(3), scale=0.1, thickness=3, transpa
     return tmp
 
 class LiberoEnv:
-    """LIBERO environment wrapper for robotic manipulation tasks."""
+    """
+    LIBERO environment wrapper for robotic manipulation tasks.
+    
+    git clone https://github.com/Lifelong-Robot-Learning/LIBERO
+    cd LIBERO
+    pip install -e .
+    pip install easydict==1.9 robosuite==1.4.0 bddl==1.0.1 future==0.18.2 matplotlib==3.5.3 # ref: requirements.txt
+    
+    Python 3.10 are verified with this environment.
+    """
     
     @classmethod
     def list_tasks(cls, select_task_suite: None|str|list[str]=None):
@@ -203,14 +210,6 @@ class LiberoEnv:
         self.replay_images = []
         
         return self.last_obs
-        
-    # Transformation matrix from TCP (Tool Center Point) to end-effector frame
-    Ttcp2eef = np.array([
-        [0, 0, 1, 0],
-        [0, -1, 0, 0],
-        [1, 0, 0, 0],
-        [0, 0, 0, 1],
-    ])
     
     def compute_observation(self, obs):
         """Compute observation from raw environment observation.
@@ -232,20 +231,10 @@ class LiberoEnv:
         # Get wrist camera image (eye-in-hand)
         wrist_image = obs["robot0_eye_in_hand_image"][::-1]  # Fix mujoco upside-down image # rgb24
         
-        # Get camera extrinsic matrix and its inverse
-        Tcam2world = get_camera_extrinsic_matrix(self.env.sim, "agentview")
-        Tworld2cam = invert_transform(Tcam2world)
-
-        # Construct end-effector pose in world frame
-        Teef2world = np.eye(4)
-        Teef2world[:3, 3] = obs["robot0_eef_pos"]  # Position
-        Teef2world[:3, :3] = quat2mat(obs["robot0_eef_quat"])  # Orientation
-
-        # Compute TCP pose in camera frame
-        Ttcp2cam = Tworld2cam @ Teef2world @ self.Ttcp2eef
-        
-        # Compute gripper opening
-        gripper_open = float(obs["robot0_gripper_qpos"][0] - obs["robot0_gripper_qpos"][1])
+        Ttcp2cam, gripper_open = libero2uea_state(
+            obs["robot0_eef_pos"], obs["robot0_eef_quat"], obs["robot0_gripper_qpos"], 
+            get_camera_extrinsic_matrix(self.env.sim, "agentview") # context
+        )
         
         return {
             "image": image,              # RGB image from agent view
@@ -273,31 +262,10 @@ class LiberoEnv:
         # Record last image for video replay
         self.replay_images.append(self.last_obs["image"])
         
-        # Restore end-effector pose in world frame from last observation
-        Tcam2world = get_camera_extrinsic_matrix(self.env.sim, "agentview")
-        Teef2world = Tcam2world @ self.last_obs["Ttcp2cam"] @ invert_transform(self.Ttcp2eef)
-        
-        # Compute target end-effector pose in world frame from action
-        Teefaction2world = Tcam2world @ action["Ttcp2cam"] @ invert_transform(self.Ttcp2eef)  # Absolute control
-        
-        # Compute position delta in libero way
-        delta_pos = Teefaction2world[:3, 3] - Teef2world[:3, 3]
-        
-        # Compute orientation delta in libero way
-        # action_ori = rotation_mat_error @ obs_eef_ori_mat
-        # So rotation_mat_error = action_ori @ obs_eef_ori_mat.T
-        rotation_mat_error = Teefaction2world[:3, :3] @ Teef2world[:3, :3].T
-        delta_quat = mat2quat(rotation_mat_error)
-        delta_axis_angle = quat2axisangle(delta_quat)
-        
-        # Restore scaling factors in libero way
-        scaled_delta_pos = delta_pos * 20
-        scaled_delta_ori = delta_axis_angle * 2
-        
-        # Restore gripper action
-        # action_gripper_qpos = (-gripper_action + 1) * 0.04
-        # So gripper_action = 1 - action_gripper_qpos / 0.04
-        gripper_action = 1 - action["gripper_open"] / 0.04
+        scaled_delta_pos, scaled_delta_ori, gripper_action = uea2libero_action(
+            action["Ttcp2cam"], action["gripper_open"], 
+            self.last_obs["Ttcp2cam"], get_camera_extrinsic_matrix(self.env.sim, "agentview") # context
+        )
         
         # Reconstruct libero action format
         original_action = np.concatenate([
