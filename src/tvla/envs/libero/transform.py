@@ -3,6 +3,7 @@ import numpy as np
 from robosuite.utils.transform_utils import quat2mat, mat2quat, quat2axisangle, axisangle2quat
 from robosuite.utils.control_utils import set_goal_orientation, set_goal_position
 from pytransform3d.transformations import invert_transform
+from pytransform3d.rotations import quaternion_from_matrix, matrix_from_quaternion
 
 # Transformation of Unified Explicit Action Representation (UEA) to LIBERO
         
@@ -24,7 +25,11 @@ def uea2libero_state(
     
     # Restore EEF
     eef_pos = Teef2world[:3, 3]
-    eef_quat = mat2quat(Teef2world[:3, :3])
+    # eef_quat = mat2quat(Teef2world[:3, :3])
+    # For quaternions, -q has the same physical meaning as q, 
+    # but here we need to ensure consistency with the untransformed representation; 
+    # i.e., mat2quat(quat2mat(q)) should return the same q.
+    eef_quat = np.roll(quaternion_from_matrix(Teef2world[:3, :3]), -1)
     # eef_axis_angle = quat2axisangle(eef_quat)
     
     # Restore gripper
@@ -40,7 +45,8 @@ def libero2uea_state(
     # Construct end-effector pose in world frame
     Teef2world = np.eye(4)
     Teef2world[:3, 3] = eef_pos  # Position
-    Teef2world[:3, :3] = quat2mat(eef_quat)  # Orientation
+    # Teef2world[:3, :3] = quat2mat(eef_quat)  # Orientation
+    Teef2world[:3, :3] = matrix_from_quaternion(np.roll(eef_quat, 1))  # Orientation
 
     # Compute TCP pose in camera frame
     Ttcp2cam = invert_transform(Tcam2world) @ Teef2world @ Ttcp2eef
@@ -68,7 +74,8 @@ def uea2libero_action(
     # action_ori = rotation_mat_error @ obs_eef_ori_mat
     # So rotation_mat_error = action_ori @ obs_eef_ori_mat.T
     rotation_mat_error = Teefaction2world[:3, :3] @ Teefstate2world[:3, :3].T
-    delta_quat = mat2quat(rotation_mat_error)
+    # delta_quat = mat2quat(rotation_mat_error)
+    delta_quat = np.roll(quaternion_from_matrix(rotation_mat_error), -1)
     delta_axis_angle = quat2axisangle(delta_quat)
     
     # Restore scaling factors in libero way
@@ -92,8 +99,8 @@ def libero2uea_action(
     
     # scale actions:
     # /root/miniforge3/envs/libero/lib/python3.8/site-packages/robosuite/controllers/base_controller.py
-    scaled_delta_pos /= 20
-    scaled_delta_ori /= 2
+    scaled_delta_pos = scaled_delta_pos / 20
+    scaled_delta_ori = scaled_delta_ori / 2
     
     goal_ori = set_goal_orientation(scaled_delta_ori, Teefstate2world[:3, :3])
     goal_pos = set_goal_position(scaled_delta_pos, Teefstate2world[:3, 3])
