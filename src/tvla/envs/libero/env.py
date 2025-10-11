@@ -14,7 +14,7 @@ from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 
 from robosuite.utils.camera_utils import get_camera_intrinsic_matrix, get_camera_extrinsic_matrix, get_real_depth_map
-from .transform import libero2uea_state, uea2libero_action
+from .transform import libero2uea_state, uea2libero_action, quat2axisangle
 
 # Set numpy print options for better readability
 np.set_printoptions(precision=6, suppress=True)
@@ -120,7 +120,7 @@ class LiberoEnv:
                 tasks.append((task_suite_name, task_id))
         return tasks
     
-    def __init__(self, task_suite_name, task_id, log_path="logs/libero"):
+    def __init__(self, task_suite_name, task_id, log_path="logs/libero", uea_repr: bool=True):
         """Initialize LIBERO environment.
         
         Args:
@@ -131,6 +131,7 @@ class LiberoEnv:
         self.task_suite_name = task_suite_name
         self.task_id = task_id
         self.log_path = log_path
+        self.uea_repr = uea_repr
         
         # Set random seed for reproducibility
         seed = 7
@@ -173,8 +174,6 @@ class LiberoEnv:
         self.env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
         
         self.task_description = task.language
-        
-        pathlib.Path(self.log_path).mkdir(parents=True, exist_ok=True)
     
     def reset(self, episode_idx):
         """Reset environment for a new episode.
@@ -231,21 +230,33 @@ class LiberoEnv:
         # Get wrist camera image (eye-in-hand)
         wrist_image = obs["robot0_eye_in_hand_image"][::-1]  # Fix mujoco upside-down image # rgb24
         
-        Ttcp2cam, gripper_open = libero2uea_state(
-            obs["robot0_eef_pos"], obs["robot0_eef_quat"], obs["robot0_gripper_qpos"], 
-            get_camera_extrinsic_matrix(self.env.sim, "agentview") # context
-        )
-        
-        return {
+        observation = {
             "image": image,              # RGB image from agent view
             "depth": depth,              # Depth map
             "depth_scale": depth_scale,  # Scale factor for depth
             "intrinsics": intrinsics,    # Camera intrinsic matrix
             "wrist_image": wrist_image,  # RGB image from wrist camera
-            "Ttcp2cam": Ttcp2cam,        # TCP pose in camera frame
-            "gripper_open": gripper_open, # Gripper opening amount (in SI unit (meter))
             "instruction": self.task_description, # Task description
         }
+        
+        if self.uea_repr:
+            Ttcp2cam, gripper_open = libero2uea_state(
+                obs["robot0_eef_pos"], obs["robot0_eef_quat"], obs["robot0_gripper_qpos"], 
+                get_camera_extrinsic_matrix(self.env.sim, "agentview") # context
+            )
+            
+            return observation | {
+                "Ttcp2cam": Ttcp2cam,        # TCP pose in camera frame
+                "gripper_open": gripper_open, # Gripper opening amount (in SI unit (meter))
+            }
+        else:
+            return observation | {
+                "original_state": np.concatenate((
+                    obs["robot0_eef_pos"],
+                    quat2axisangle(obs["robot0_eef_quat"]),
+                    obs["robot0_gripper_qpos"],
+                ))
+            }
     
     def step(self, action):
         """Execute action in environment.
@@ -262,17 +273,20 @@ class LiberoEnv:
         # Record last image for video replay
         self.replay_images.append(self.last_obs["image"])
         
-        scaled_delta_pos, scaled_delta_ori, gripper_action = uea2libero_action(
-            action["Ttcp2cam"], action["gripper_open"], 
-            self.last_obs["Ttcp2cam"], get_camera_extrinsic_matrix(self.env.sim, "agentview") # context
-        )
-        
-        # Reconstruct libero action format
-        original_action = np.concatenate([
-            scaled_delta_pos,      # Position delta
-            scaled_delta_ori,      # Orientation delta
-            [gripper_action]       # Gripper action
-        ])
+        if self.uea_repr:
+            scaled_delta_pos, scaled_delta_ori, gripper_action = uea2libero_action(
+                action["Ttcp2cam"], action["gripper_open"], 
+                self.last_obs["Ttcp2cam"], get_camera_extrinsic_matrix(self.env.sim, "agentview") # context
+            )
+            
+            # Reconstruct libero action format
+            original_action = np.concatenate([
+                scaled_delta_pos,      # Position delta
+                scaled_delta_ori,      # Orientation delta
+                [gripper_action]       # Gripper action
+            ])
+        else:
+            original_action = action["original_action"]
         
         # Execute action in environment
         obs, reward, done, info = self.env.step(original_action)
@@ -288,6 +302,7 @@ class LiberoEnv:
         # Save a replay video of the episode
         suffix = "success" if self.last_obs["success"] else "failure"
         task_segment = self.task_description.replace(" ", "_")
+        pathlib.Path(self.log_path).mkdir(parents=True, exist_ok=True)
         imageio.mimwrite(
             pathlib.Path(self.log_path) / f"rollout_{self.task_suite_name}_{self.task_id:02d}_{task_segment}_{suffix}_{self.episode_idx:02d}.mp4",
             [np.asarray(x) for x in self.replay_images],
