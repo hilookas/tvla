@@ -20,20 +20,20 @@ from typing import Optional, Union
 import torch
 from torch import nn
 
-from ...cache_utils import Cache, StaticCache
-from ...generation import GenerationMixin
-from ...modeling_flash_attention_utils import FlashAttentionKwargs
-from ...modeling_outputs import BaseModelOutputWithPast
-from ...modeling_utils import PreTrainedModel
-from ...processing_utils import Unpack
-from ...utils import (
+from transformers.cache_utils import Cache, StaticCache
+from transformers.generation import GenerationMixin
+from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
+from transformers.modeling_outputs import BaseModelOutputWithPast
+from transformers.modeling_utils import PreTrainedModel
+from transformers.processing_utils import Unpack
+from transformers.utils import (
     ModelOutput,
     TransformersKwargs,
     auto_docstring,
     can_return_tuple,
     logging,
 )
-from ..auto import AutoModel
+from transformers.models.auto import AutoModel
 from .configuration_paligemma import PaliGemmaConfig
 
 

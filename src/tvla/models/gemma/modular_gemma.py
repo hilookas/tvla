@@ -19,15 +19,15 @@ import sentencepiece as spm
 import torch
 from torch import nn
 
-from ...cache_utils import Cache, DynamicCache
-from ...configuration_utils import PretrainedConfig
-from ...masking_utils import create_causal_mask
-from ...modeling_outputs import BaseModelOutputWithPast
-from ...modeling_utils import PreTrainedModel
-from ...processing_utils import Unpack
-from ...tokenization_utils import AddedToken, PreTrainedTokenizer
-from ...utils import TransformersKwargs, logging
-from ..llama.modeling_llama import (
+from transformers.cache_utils import Cache, DynamicCache
+from transformers.configuration_utils import PretrainedConfig
+from transformers.masking_utils import create_causal_mask
+from transformers.modeling_outputs import BaseModelOutputWithPast
+from transformers.modeling_utils import PreTrainedModel
+from transformers.processing_utils import Unpack
+from transformers.tokenization_utils import AddedToken, PreTrainedTokenizer
+from transformers.utils import TransformersKwargs, logging
+from transformers.models.llama.modeling_llama import (
     LlamaForCausalLM,
     LlamaForSequenceClassification,
     LlamaForTokenClassification,
@@ -36,11 +36,11 @@ from ..llama.modeling_llama import (
     LlamaPreTrainedModel,
     LlamaRotaryEmbedding,
 )
-from ..llama.tokenization_llama import LlamaTokenizer
+from transformers.models.llama.tokenization_llama import LlamaTokenizer
 
 
 if TYPE_CHECKING:
-    from ...tokenization_utils_base import TextInput
+    from transformers.tokenization_utils_base import TextInput
 
 VOCAB_FILES_NAMES = {"vocab_file": "tokenizer.model"}
 

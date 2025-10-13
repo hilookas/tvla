@@ -20,9 +20,9 @@ from typing import Optional, Union
 
 import numpy as np
 
-from ...feature_extraction_utils import BatchFeature
-from ...image_utils import ImageInput, is_valid_image
-from ...processing_utils import (
+from transformers.feature_extraction_utils import BatchFeature
+from transformers.image_utils import ImageInput, is_valid_image
+from transformers.processing_utils import (
     ImagesKwargs,
     MultiModalData,
     ProcessingKwargs,
@@ -30,8 +30,8 @@ from ...processing_utils import (
     TextKwargs,
     Unpack,
 )
-from ...tokenization_utils_base import AddedToken, PreTokenizedInput, TextInput
-from ...utils import logging
+from transformers.tokenization_utils_base import AddedToken, PreTokenizedInput, TextInput
+from transformers.utils import logging
 
 
 logger = logging.get_logger(__name__)
