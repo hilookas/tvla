@@ -83,6 +83,7 @@ class PaliGemmaConfig(PretrainedConfig):
         vocab_size=257152,
         projection_dim=2048,
         hidden_size=2048,
+        use_norm: bool=True,
         **kwargs,
     ):
         self.image_token_index = image_token_index
@@ -119,9 +120,13 @@ class PaliGemmaConfig(PretrainedConfig):
                 num_key_value_heads=1,
                 is_encoder_decoder=False,
                 vocab_size=vocab_size,
+                use_norm=use_norm,
             )
         self.text_config.num_image_tokens = (self.vision_config.image_size // self.vision_config.patch_size) ** 2
         self.vision_config.projection_dim = projection_dim
+
+        self.use_norm = use_norm
+
         super().__init__(**kwargs)
 
 
