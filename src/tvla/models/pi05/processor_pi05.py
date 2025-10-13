@@ -22,8 +22,8 @@ import numpy as np
 import torch
 
 from lerobot.configs.types import PipelineFeatureType, PolicyFeature
-from lerobot.policies.pi05.configuration_pi05 import PI05Config
-from lerobot.policies.pi05.modeling_pi05 import pad_vector
+from .configuration_pi05 import PI05Config
+from .modeling_pi05 import pad_vector
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
     DeviceProcessorStep,

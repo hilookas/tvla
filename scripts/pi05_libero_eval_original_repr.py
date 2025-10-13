@@ -1,4 +1,4 @@
-from lerobot.policies.pi05.modeling_pi05 import PI05Policy
+from tvla.models.pi05.modeling_pi05 import PI05Policy
 
 from lerobot.processor import PolicyProcessorPipeline
 
