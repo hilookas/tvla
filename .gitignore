@@ -4,3 +4,5 @@ transformers/
 LIBERO
 logs/
 __pycache__/
+tvla-data*
+PyAV

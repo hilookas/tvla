@@ -18,86 +18,19 @@ from .transform import libero2uea_state, uea2libero_action, quat2axisangle
 
 # Set numpy print options for better readability
 np.set_printoptions(precision=6, suppress=True)
-      
-# Copy from FoundationPose/Utils.py
-def draw_xyz_axis(color, ob_in_cam, K=np.eye(3), scale=0.1, thickness=3, transparency=0, is_input_rgb=True, save_path=None):
-    """
-    Draw XYZ coordinate axes on an image.
-    
-    Args:
-        color: Input image (RGB or BGR)
-        ob_in_cam: Object pose in camera frame (4x4 transformation matrix)
-        scale: Scale factor for axis length
-        K: Camera intrinsic matrix (3x3)
-        thickness: Line thickness for drawing
-        transparency: Transparency factor (0-1)
-        is_input_rgb: Whether input is RGB (True) or BGR (False)
-        save_path: Optional path to save the result image
-    
-    Returns:
-        Image with XYZ axes drawn
-    """
-    import cv2
-    
-    def project_3d_to_2d(pt, K, ob_in_cam):
-        """Project 3D point to 2D image coordinates."""
-        pt = pt.reshape(4, 1)
-        projected = K @ ((ob_in_cam@pt)[:3,:])
-        projected = projected.reshape(-1)
-        projected = projected / projected[2]
-        return projected.reshape(-1)[:2].round().astype(int)
-
-    # Convert RGB to BGR if needed (OpenCV uses BGR)
-    if is_input_rgb:
-        color = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
-    xx = np.array([1,0,0,1]).astype(float)
-    yy = np.array([0,1,0,1]).astype(float)
-    zz = np.array([0,0,1,1]).astype(float)
-    xx[:3] = xx[:3]*scale
-    yy[:3] = yy[:3]*scale
-    zz[:3] = zz[:3]*scale
-    origin = tuple(project_3d_to_2d(np.array([0,0,0,1]), K, ob_in_cam))
-    xx = tuple(project_3d_to_2d(xx, K, ob_in_cam))
-    yy = tuple(project_3d_to_2d(yy, K, ob_in_cam))
-    zz = tuple(project_3d_to_2d(zz, K, ob_in_cam))
-    line_type = cv2.LINE_AA
-    arrow_len = 0
-    tmp = color.copy()
-    tmp1 = tmp.copy()
-    tmp1 = cv2.arrowedLine(tmp1, origin, xx, color=(0,0,255), thickness=thickness, line_type=line_type, tipLength=arrow_len)
-    mask = np.linalg.norm(tmp1-tmp, axis=-1)>0
-    tmp[mask] = tmp[mask]*transparency + tmp1[mask]*(1-transparency)
-    tmp1 = tmp.copy()
-    tmp1 = cv2.arrowedLine(tmp1, origin, yy, color=(0,255,0), thickness=thickness, line_type=line_type, tipLength=arrow_len)
-    mask = np.linalg.norm(tmp1-tmp, axis=-1)>0
-    tmp[mask] = tmp[mask]*transparency + tmp1[mask]*(1-transparency)
-    tmp1 = tmp.copy()
-    tmp1 = cv2.arrowedLine(tmp1, origin, zz, color=(255,0,0), thickness=thickness, line_type=line_type, tipLength=arrow_len)
-    mask = np.linalg.norm(tmp1-tmp, axis=-1)>0
-    tmp[mask] = tmp[mask]*transparency + tmp1[mask]*(1-transparency)
-    tmp = tmp.astype(np.uint8)
-    
-    if save_path:
-        cv2.imwrite(save_path, tmp)
-    
-    # Convert back to RGB if input was RGB
-    if is_input_rgb:
-        tmp = cv2.cvtColor(tmp, cv2.COLOR_BGR2RGB)
-
-    return tmp
 
 class LiberoEnv:
     """
     LIBERO environment wrapper for robotic manipulation tasks.
-    
+
     git clone https://github.com/Lifelong-Robot-Learning/LIBERO
     cd LIBERO
     pip install -e .
     pip install easydict==1.9 robosuite==1.4.0 bddl==1.0.1 future==0.18.2 matplotlib==3.5.3 # ref: requirements.txt
-    
+
     Python 3.10 are verified with this environment.
     """
-    
+
     @classmethod
     def list_tasks(cls, select_task_suite: None|str|list[str]=None):
         """List available tasks from LIBERO benchmark suites."""
@@ -110,19 +43,19 @@ class LiberoEnv:
             task_suite_names = select_task_suite
         else:
             raise ValueError(f"Invalid task suite name: {select_task_suite}")
-        
+
         benchmark_dict = benchmark.get_benchmark_dict()
-        
+
         tasks = []
         for task_suite_name in task_suite_names:
             task_suite: benchmark.Benchmark = benchmark_dict[task_suite_name]()
             for task_id in range(task_suite.n_tasks):
                 tasks.append((task_suite_name, task_id))
         return tasks
-    
+
     def __init__(self, task_suite_name, task_id, log_path="logs/libero", uea_repr: bool=True):
         """Initialize LIBERO environment.
-        
+
         Args:
             task_suite_name: Name of the task suite
             task_id: ID of the specific task
@@ -132,7 +65,7 @@ class LiberoEnv:
         self.task_id = task_id
         self.log_path = log_path
         self.uea_repr = uea_repr
-        
+
         # Set random seed for reproducibility
         seed = 7
         np.random.seed(seed)
@@ -155,7 +88,7 @@ class LiberoEnv:
             self.max_steps = 400  # longest training demo has 373 steps
         else:
             raise ValueError(f"Unknown task suite: {self.task_suite_name}")
-        
+
         # Get specific task and its initial states
         task = task_suite.get_task(self.task_id)
         self.initial_states = task_suite.get_task_init_states(self.task_id)
@@ -164,23 +97,23 @@ class LiberoEnv:
         task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
         resolution = 256  # resolution used to render training data
         env_args = {
-            "bddl_file_name": task_bddl_file, 
-            "camera_heights": resolution, 
+            "bddl_file_name": task_bddl_file,
+            "camera_heights": resolution,
             "camera_widths": resolution,
             "camera_depths": True,
         }
         self.env = OffScreenRenderEnv(**env_args)
         seed = 7
         self.env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
-        
+
         self.task_description = task.language
-    
+
     def reset(self, episode_idx):
         """Reset environment for a new episode.
-        
+
         Args:
             episode_idx: Index of the episode
-            
+
         Returns:
             Initial observation
         """
@@ -192,7 +125,7 @@ class LiberoEnv:
 
         # Set initial states
         obs = self.env.set_init_state(self.initial_states[self.episode_idx])
-        
+
         # Wait for objects to stabilize in simulation
         num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
         for _ in range(num_steps_wait):
@@ -200,22 +133,22 @@ class LiberoEnv:
             # and we need to wait for them to fall
             LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]  # No movement, gripper open
             obs, reward, done, info = self.env.step(LIBERO_DUMMY_ACTION)
-        
+
         self.last_obs = self.compute_observation(obs)
         self.last_obs["success"] = done
 
         # Setup
         self.t = 0
         self.replay_images = []
-        
+
         return self.last_obs
-    
+
     def compute_observation(self, obs):
         """Compute observation from raw environment observation.
-        
+
         Args:
             obs: Raw observation from LIBERO environment
-            
+
         Returns:
             Processed observation dictionary
         """
@@ -226,10 +159,10 @@ class LiberoEnv:
         depth = (get_real_depth_map(self.env.sim, obs["agentview_depth"]) * depth_scale)[::-1].squeeze().astype(np.uint16)  # gray16
         # Get camera intrinsic matrix
         intrinsics = get_camera_intrinsic_matrix(self.env.sim, "agentview", *depth.shape)
-        
+
         # Get wrist camera image (eye-in-hand)
         wrist_image = obs["robot0_eye_in_hand_image"][::-1]  # Fix mujoco upside-down image # rgb24
-        
+
         observation = {
             "image": image,              # RGB image from agent view
             "depth": depth,              # Depth map
@@ -238,13 +171,13 @@ class LiberoEnv:
             "wrist_image": wrist_image,  # RGB image from wrist camera
             "instruction": self.task_description, # Task description
         }
-        
+
         if self.uea_repr:
             Ttcp2cam, gripper_open = libero2uea_state(
-                obs["robot0_eef_pos"], obs["robot0_eef_quat"], obs["robot0_gripper_qpos"], 
+                obs["robot0_eef_pos"], obs["robot0_eef_quat"], obs["robot0_gripper_qpos"],
                 get_camera_extrinsic_matrix(self.env.sim, "agentview") # context
             )
-            
+
             return observation | {
                 "Ttcp2cam": Ttcp2cam,        # TCP pose in camera frame
                 "gripper_open": gripper_open, # Gripper opening amount (in SI unit (meter))
@@ -257,28 +190,28 @@ class LiberoEnv:
                     obs["robot0_gripper_qpos"],
                 ))
             }
-    
+
     def step(self, action):
         """Execute action in environment.
-        
+
         Args:
             action: Action dictionary containing Ttcp2cam (absolute control) and gripper_open
-            
+
         Returns:
             Updated observation
         """
         assert self.t < self.max_steps
         self.t += 1
-        
+
         # Record last image for video replay
         self.replay_images.append(self.last_obs["image"])
-        
+
         if self.uea_repr:
             scaled_delta_pos, scaled_delta_ori, gripper_action = uea2libero_action(
-                action["Ttcp2cam"], action["gripper_open"], 
+                action["Ttcp2cam"], action["gripper_open"],
                 self.last_obs["Ttcp2cam"], get_camera_extrinsic_matrix(self.env.sim, "agentview") # context
             )
-            
+
             # Reconstruct libero action format
             original_action = np.concatenate([
                 scaled_delta_pos,      # Position delta
@@ -287,14 +220,14 @@ class LiberoEnv:
             ])
         else:
             original_action = action["original_action"]
-        
+
         # Execute action in environment
         obs, reward, done, info = self.env.step(original_action)
-        
+
         # Update observation and success status
         self.last_obs = self.compute_observation(obs)
         self.last_obs["success"] = done
-        
+
         return self.last_obs
 
     def finish(self):
@@ -319,7 +252,7 @@ class Args:
 
 def test_libero(args: Args) -> None:
     """Evaluate LIBERO tasks.
-    
+
     Args:
         args: Command line arguments
     """
@@ -332,13 +265,14 @@ def test_libero(args: Args) -> None:
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"Starting episode {task_episodes+1}...")
-            
+
             obs = libero_env.reset(episode_idx)
-            
+
             # Debug: uncomment to visualize TCP pose
             # import ipdb; ipdb.set_trace()
+            # from tvla.data.utils import draw_xyz_axis
             # draw_xyz_axis(obs["image"], obs["Ttcp2cam"], obs["intrinsics"], scale=0.03, thickness=4, transparency=0, save_path="cv_image.png")
-            
+
             try:
                 # Mock action (simple test action)
                 action = {
@@ -346,8 +280,8 @@ def test_libero(args: Args) -> None:
                     "gripper_open": 0,
                 }
                 # Move TCP slightly in x-direction
-                action["Ttcp2cam"][0,3] -= 0.1 
-                
+                action["Ttcp2cam"][0,3] -= 0.1
+
                 while True:
                     # Execute action in environment
                     obs = libero_env.step(action)
@@ -363,7 +297,7 @@ def test_libero(args: Args) -> None:
             # Update episode counters
             task_episodes += 1
             total_episodes += 1
-            
+
             # Save video and log results
             libero_env.finish()  # save video
 
