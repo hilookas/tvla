@@ -150,6 +150,28 @@ class VideoEncoder:
         self.q.put(None)
         self.q.join()
 
+def load_video(video_path, format="rgb24"):
+    """
+    Use PyAV to load a video and return in ndarray format
+
+    Args:
+        video_path (str): video file path
+
+    Returns:
+        PIL Image: the frame image
+    """
+    container = av.open(video_path)
+
+    video_stream = container.streams.video[0]
+
+    for frame in container.decode(video_stream):
+        yield frame.to_ndarray(format=format)
+
+    for stream in container.streams:
+        stream.close()
+
+    container.close()
+
 # Copy from https://github.com/NVlabs/FoundationPose/blob/main/Utils.py
 
 def draw_xyz_axis(color, ob_in_cam, K=np.eye(3), scale=0.1, thickness=3, transparency=0, is_input_rgb=True, save_path=None):
