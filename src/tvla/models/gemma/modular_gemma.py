@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Callable
 
 import sentencepiece as spm
 import torch
@@ -28,6 +28,11 @@ from transformers.processing_utils import Unpack
 from transformers.tokenization_utils import AddedToken, PreTrainedTokenizer
 from transformers.utils import TransformersKwargs, logging
 from transformers.models.llama.modeling_llama import (
+    apply_rotary_pos_emb,
+    eager_attention_forward,
+    ALL_ATTENTION_FUNCTIONS,
+    LlamaAttention,
+    LlamaDecoderLayer,
     LlamaForCausalLM,
     LlamaForSequenceClassification,
     LlamaForTokenClassification,
@@ -108,6 +113,10 @@ class GemmaConfig(PretrainedConfig):
             Whether to use a bias in the query, key, value and output projection layers during self-attention.
         attention_dropout (`float`, *optional*, defaults to 0.0):
             The dropout ratio for the attention probabilities.
+        use_adarms (`bool`, *optional*, defaults to `False`):
+            Whether to use ADARMS.
+        adarms_cond_dim (`int`, *optional*, defaults to `None`):
+            The dimension of the ADARMS condition.
     ```python
     >>> from transformers import GemmaModel, GemmaConfig
     >>> # Initializing a Gemma gemma-7b style configuration
@@ -157,6 +166,9 @@ class GemmaConfig(PretrainedConfig):
         rope_theta=10000.0,
         attention_bias=False,
         attention_dropout=0.0,
+        use_adarms: bool=False,
+        adarms_cond_dim: Optional[int]=None,
+        use_norm: bool=True,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -175,6 +187,14 @@ class GemmaConfig(PretrainedConfig):
         self.rope_theta = rope_theta
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        self.use_adarms = use_adarms
+        self.adarms_cond_dim = adarms_cond_dim
+
+        # Set default for adarms_cond_dim if use_adarms is True
+        if self.use_adarms and self.adarms_cond_dim is None:
+            self.adarms_cond_dim = self.hidden_size
+
+        self.use_norm = use_norm
 
         super().__init__(
             pad_token_id=pad_token_id,
@@ -342,23 +362,54 @@ class GemmaTokenizer(LlamaTokenizer, PreTrainedTokenizer):
 
 
 class GemmaRMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6):
+    def __init__(self, dim: int, eps: float = 1e-6, cond_dim: Optional[int] = None):
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.zeros(dim))
+        self.cond_dim = cond_dim
+
+        # Dense layer for adaptive normalization (if cond_dim is provided)
+        if self.cond_dim is not None:
+            self.dense = nn.Linear(cond_dim, dim * 3, bias=True)
+        else:
+            self.weight = nn.Parameter(torch.zeros(dim))
 
     def _norm(self, x):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
-    def forward(self, x):
-        output = self._norm(x.float())
-        # Llama does x.to(float16) * w whilst Gemma is (x * w).to(float16)
-        # See https://github.com/huggingface/transformers/pull/29402
-        output = output * (1.0 + self.weight.float())
-        return output.type_as(x)
+    def forward(self, x, cond=None):
+        dtype = x.dtype  # original dtype, could be half-precision
+        normed_inputs = self._norm(x.float())
+
+        if self.cond_dim is not None:
+            assert cond is not None
+
+            # adaptive RMSNorm (if cond is provided and dense layer exists)
+            if cond.shape[-1] != self.cond_dim:
+                raise ValueError(f"Expected cond dimension {self.cond_dim}, got {cond.shape[-1]}")
+
+            modulation = self.dense(cond)
+            # Reshape modulation to broadcast properly: [batch, 1, features] for [batch, seq, features]
+            if len(x.shape) == 3:  # [batch, seq, features]
+                modulation = modulation.unsqueeze(1)
+
+            scale, shift, gate = torch.chunk(modulation, 3, dim=-1)
+
+            normed_inputs = normed_inputs * (1 + scale.to(torch.float32)) + shift.to(torch.float32)
+
+            return normed_inputs.to(dtype), gate.to(dtype)
+        else:
+            # regular RMSNorm
+            # scale by learned parameter in float32 (matches source implementation)
+            normed_inputs = normed_inputs * (1.0 + self.weight.float())
+            # Llama does x.to(float16) * w whilst Gemma is (x * w).to(float16)
+            # See https://github.com/huggingface/transformers/pull/29402
+            return normed_inputs.to(dtype), None  # return in original dtype with None gate
 
     def extra_repr(self):
-        return f"{tuple(self.weight.shape)}, eps={self.eps}"
+        if self.cond_dim is not None:
+            return f"{tuple(self.dense.weight.shape)}, eps={self.eps}, cond_dim={self.cond_dim}"
+        else:
+            return f"{tuple(self.weight.shape)}, eps={self.eps}"
 
 
 class GemmaMLP(LlamaMLP):
@@ -373,16 +424,145 @@ class GemmaRotaryEmbedding(LlamaRotaryEmbedding):
     pass
 
 
+class GemmaAttention(LlamaAttention):
+    """Multi-headed attention from 'Attention Is All You Need' paper"""
+
+    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        attention_mask: Optional[torch.Tensor],
+        past_key_values: Optional[Cache] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        use_cache: bool = False,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
+
+        query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+        cos, sin = position_embeddings
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        # Use cache if provided
+        if past_key_values is not None:
+            if use_cache:
+                # sin and cos are specific to RoPE models; cache_position needed for the static cache
+                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+                key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            else:
+                key_states = torch.cat([past_key_values[self.layer_idx][0], key_states], dim=2)
+                value_states = torch.cat([past_key_values[self.layer_idx][1], value_states], dim=2)
+
+        attention_interface: Callable = eager_attention_forward
+        if self.config._attn_implementation != "eager":
+            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+
+        attn_output, attn_weights = attention_interface(
+            self,
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            dropout=0.0 if not self.training else self.attention_dropout,
+            scaling=self.scaling,
+            **kwargs,
+        )
+
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = self.o_proj(attn_output)
+        return attn_output, attn_weights
+
+
+class GemmaDecoderLayer(LlamaDecoderLayer):
+    def __init__(self, config: GemmaConfig, layer_idx: int):
+        cond_dim = getattr(config, 'adarms_cond_dim', None) if getattr(config, 'use_adarms', False) else None
+        super().__init__()
+        self.hidden_size = config.hidden_size
+
+        self.self_attn = GemmaAttention(config=config, layer_idx=layer_idx)
+
+        self.mlp = GemmaMLP(config)
+        self.input_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
+        self.post_attention_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
+
+    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        adarms_cond: Optional[torch.Tensor] = None,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> torch.Tensor:
+        residual = hidden_states
+        hidden_states, gate = self.input_layernorm(hidden_states, adarms_cond)
+        # Self Attention
+        hidden_states, _ = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            **kwargs,
+        )
+        if gate is None:
+            hidden_states = residual + hidden_states
+        else:
+            hidden_states = residual + hidden_states * gate
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states, gate = self.post_attention_layernorm(hidden_states, adarms_cond)
+        hidden_states = self.mlp(hidden_states)
+        if gate is None:
+            hidden_states = residual + hidden_states
+        else:
+            hidden_states = residual + hidden_states * gate
+        return hidden_states
+
+
 class GemmaPreTrainedModel(LlamaPreTrainedModel):
     def _init_weights(self, module):
         PreTrainedModel._init_weights(self, module)
 
         # We initialize with 0s to be 1 centered as the RMSNorm here does (1 + weight)
         if "RMSNorm" in module.__class__.__name__:
-            module.weight.data.zero_()
+            if module.cond_dim is not None:
+                # Initialize with zeros (matches source implementation)
+                module.dense.weight.data.zero_()
+            else:
+                module.weight.data.zero_()
 
 
 class GemmaModel(LlamaModel):
+    def __init__(self, config: GemmaConfig):
+        cond_dim = getattr(config, 'adarms_cond_dim', None) if getattr(config, 'use_adarms', False) else None
+        super().__init__(config)
+        self.padding_idx = config.pad_token_id
+        self.vocab_size = config.vocab_size
+
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.layers = nn.ModuleList(
+            [GemmaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        )
+        self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
+        self.rotary_emb = GemmaRotaryEmbedding(config=config)
+        self.gradient_checkpointing = False
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -392,6 +572,7 @@ class GemmaModel(LlamaModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        adarms_cond: Optional[torch.Tensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -427,11 +608,12 @@ class GemmaModel(LlamaModel):
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        # normalized
-        # Gemma downcasts the below to float16, causing sqrt(3072)=55.4256 to become 55.5
-        # See https://github.com/huggingface/transformers/pull/29402
-        normalizer = torch.tensor(self.config.hidden_size**0.5, dtype=hidden_states.dtype)
-        hidden_states = hidden_states * normalizer
+        if self.config.use_norm:
+            # normalized
+            # Gemma downcasts the below to float16, causing sqrt(3072)=55.4256 to become 55.5
+            # See https://github.com/huggingface/transformers/pull/29402
+            normalizer = torch.tensor(self.config.hidden_size**0.5, dtype=hidden_states.dtype)
+            hidden_states = hidden_states * normalizer
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
@@ -442,9 +624,10 @@ class GemmaModel(LlamaModel):
                 use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
+                adarms_cond=adarms_cond,
                 **kwargs,
             )
-        hidden_states = self.norm(hidden_states)
+        hidden_states, _ = self.norm(hidden_states, adarms_cond)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values if use_cache else None,
@@ -452,7 +635,10 @@ class GemmaModel(LlamaModel):
 
 
 class GemmaForCausalLM(LlamaForCausalLM):
-    def forward(**super_kwargs):
+    def forward(
+        adarms_cond: Optional[torch.Tensor] = None,
+        **super_kwargs
+    ):
         r"""
         Example:
 
@@ -470,7 +656,7 @@ class GemmaForCausalLM(LlamaForCausalLM):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "What is your favorite condiment?"
         ```"""
-        return super().forward(**super_kwargs)
+        return super().forward(adarms_cond=adarms_cond, **super_kwargs)
 
 
 class GemmaForSequenceClassification(LlamaForSequenceClassification):

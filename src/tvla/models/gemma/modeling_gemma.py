@@ -300,12 +300,12 @@ class GemmaAttention(nn.Module):
 class GemmaDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: GemmaConfig, layer_idx: int):
         super().__init__()
+        cond_dim = getattr(config, 'adarms_cond_dim', None) if getattr(config, 'use_adarms', False) else None
         self.hidden_size = config.hidden_size
 
         self.self_attn = GemmaAttention(config=config, layer_idx=layer_idx)
 
         self.mlp = GemmaMLP(config)
-        cond_dim = getattr(config, 'adarms_cond_dim', None) if getattr(config, 'use_adarms', False) else None
         self.input_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
         self.post_attention_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
 
@@ -335,7 +335,6 @@ class GemmaDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             **kwargs,
         )
-
         if gate is None:
             hidden_states = residual + hidden_states
         else:
@@ -386,6 +385,7 @@ class GemmaPreTrainedModel(PreTrainedModel):
 class GemmaModel(GemmaPreTrainedModel):
     def __init__(self, config: GemmaConfig):
         super().__init__(config)
+        cond_dim = getattr(config, 'adarms_cond_dim', None) if getattr(config, 'use_adarms', False) else None
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
@@ -393,7 +393,6 @@ class GemmaModel(GemmaPreTrainedModel):
         self.layers = nn.ModuleList(
             [GemmaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        cond_dim = getattr(config, 'adarms_cond_dim', None) if getattr(config, 'use_adarms', False) else None
         self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
         self.rotary_emb = GemmaRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
