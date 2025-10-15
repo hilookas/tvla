@@ -222,4 +222,4 @@ if __name__ == "__main__":
 
 # export DISPLAY=:10.0
 # export __GLX_VENDOR_LIBRARY_NAME=mesa  # See: https://superuser.com/questions/106056/force-software-based-opengl-rendering-on-ubuntu
-# python src/tvla/data/visualize_3d.py /mnt/20T/chq_large/tvla/droid/IPRL/success/2023-06-27/Tue_Jun_27_20:25:39_2023 --show_finger --cam_type side --save_path video_side_finger_o3d.mp4
+# python src/tvla/data/visualize_3d.py /mnt/18T/chq_large/tvla/droid/IPRL/success/2023-06-27/Tue_Jun_27_20:25:39_2023 --show_finger --cam_type side --save_path video_side_finger_o3d.mp4

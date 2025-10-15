@@ -12,6 +12,8 @@ from pathlib import Path
 import queue
 import threading
 import time
+from multiprocessing import Process, JoinableQueue
+from multiprocessing.pool import Pool
 
 def polyfill_glob(pathname, *, root_dir):
     original_cwd = os.getcwd()
@@ -20,6 +22,11 @@ def polyfill_glob(pathname, *, root_dir):
         return glob.glob(pathname) # Pattern relative to the new CWD
     finally:
         os.chdir(original_cwd) # Always change back to the original CWD
+
+import os
+
+# Set log level https://gitlab.com/AOMediaCodec/SVT-AV1/-/blob/master/Source/Lib/Codec/svt_log.h
+os.environ["SVT_LOG"] = "2"
 
 class VideoEncoder:
     """
@@ -90,7 +97,8 @@ class VideoEncoder:
 
         self.q = queue.Queue()
 
-        threading.Thread(target=self.thread, args=(), daemon=True).start()
+        self.t = threading.Thread(target=self.thread, args=())
+        self.t.start()
 
     def thread(self):
         # ffmpeg -f image2 -r 30 -i imgs_dir/frame_%06d.png -vcodec libsvtav1 -pix_fmt yuv420p -g 2 -crf 30 -loglevel error -y imgs_dir.mp4
@@ -139,8 +147,6 @@ class VideoEncoder:
 
         container.close()
 
-        container = None
-
         self.q.task_done()
 
     def encode(self, image: np.ndarray):
@@ -149,6 +155,129 @@ class VideoEncoder:
     def done(self):
         self.q.put(None)
         self.q.join()
+        self.t.join()
+
+
+class MultiProcessVideoEncoder:
+    """
+    Multi-process video encoder using PyAV for video encoding.
+
+    Multi-thread version of SVT-AV1 have a memory leak issue when encoding > 1 videos at the same time.
+    ```
+    """
+
+    def __init__(
+        self,
+        video_path, # type: Path | str
+        fps: float = 30,
+        width: int = 1280,
+        height: int = 720,
+        vcodec: str = "libsvtav1",
+        pix_fmt: str = "yuv420p",
+        frame_format: str = "rgb24",
+        options = None, # type: dict[str, str] | None
+        nice: int = 0,
+    ):
+        if isinstance(video_path, str):
+            video_path = Path(video_path)
+
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.video_path: Path = video_path
+        self.fps: float = fps
+        self.width: int = width
+        self.height: int = height
+        self.vcodec: str = vcodec
+        self.pix_fmt: str = pix_fmt
+        self.frame_format: str = frame_format
+
+        if options is None:
+            options = {
+                "g": str(2), # GOP Size,
+                "crf": str(30),
+                "preset": str(10),
+            }
+
+        self.options: dict[str, str] = options
+
+        self.nice: int = nice
+
+        self.q = JoinableQueue()
+
+        self.t = Process(target=self._video_encoder_worker, args=(
+            self.video_path,
+            self.fps,
+            self.width,
+            self.height,
+            self.vcodec,
+            self.pix_fmt,
+            self.frame_format,
+            self.options,
+            self.nice,
+            self.q
+        ))
+        self.t.start()
+
+    @staticmethod
+    def _video_encoder_worker(video_path, fps, width, height, vcodec, pix_fmt, frame_format, options, nice, input_queue):
+        """
+        Multi-process video encoding worker function
+        """
+        # ffmpeg -f image2 -r 30 -i imgs_dir/frame_%06d.png -vcodec libsvtav1 -pix_fmt yuv420p -g 2 -crf 30 -loglevel error -y imgs_dir.mp4
+
+        container: OutputContainer = av.open(file=str(video_path), mode="w")
+
+        stream: Stream = container.add_stream(vcodec, rate=fps, options=options)
+        stream.pix_fmt = pix_fmt
+
+        stream.width = width
+        stream.height = height
+
+        VIDEO_PTIME = 1 / fps
+        VIDEO_CLOCK_RATE = 90000
+
+        timestamp = 0
+
+        while True:
+            if nice:
+                time.sleep(nice)
+
+            image = input_queue.get()
+
+            if image is None:
+                break
+            # print(timestamp)
+
+            frame = VideoFrame.from_ndarray(image, format=frame_format)
+
+            frame.pts = timestamp
+            frame.time_base = Fraction(1, VIDEO_CLOCK_RATE)
+
+            timestamp += int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
+
+            for packet in stream.encode(frame):
+                container.mux(packet)
+
+            input_queue.task_done()
+
+        # Stop
+        for packet in stream.encode(None):
+            container.mux(packet)
+
+        for stream in container.streams:
+            stream.close()
+
+        container.close()
+
+        input_queue.task_done()
+
+    def encode(self, image: np.ndarray):
+        self.q.put(image)
+
+    def done(self):
+        self.q.put(None)
+        self.q.join()
+        self.t.join()
 
 def load_video(video_path, format="rgb24"):
     """
@@ -239,3 +368,19 @@ def draw_xyz_axis(color, ob_in_cam, K=np.eye(3), scale=0.1, thickness=3, transpa
         tmp = cv2.cvtColor(tmp, cv2.COLOR_BGR2RGB)
 
     return tmp
+
+# We sub-class multiprocessing.pool.Pool instead of multiprocessing.Pool
+# because the latter is only a wrapper function, not a proper class.
+# See: https://stackoverflow.com/questions/6974695/python-process-pool-non-daemonic
+
+class NonDaemonProcess(Process):
+    def _get_daemon(self):
+        return False
+    def _set_daemon(self, value):
+        pass
+    daemon = property(_get_daemon, _set_daemon)
+
+class NonDaemonPool(Pool):
+    @staticmethod
+    def Process(ctx, *args, **kwds):
+        return NonDaemonProcess(*args, **kwds)
