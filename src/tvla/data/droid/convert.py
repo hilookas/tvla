@@ -247,7 +247,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--anno_path", type=str, default="/home/chq/.cache/huggingface/hub/models--KarlP--droid/snapshots/bcb840c3b496533e0adf548a54b51f2f00057837")
     parser.add_argument("--droid_base_path", type=str, default="/mnt/20T/chq_large/droid_raw_1.0.1")
-    parser.add_argument("--output_path", type=str, default="/mnt/20T/chq_large/tvla/droid")
+    parser.add_argument("--output_path", type=str, default="/mnt/18T/chq_large/tvla/droid")
     parser.add_argument("--all", action="store_true", default=False)
     parser.add_argument("--overwrite", action="store_true", default=False)
     parser.add_argument("--num_workers", type=int, default=1)

@@ -68,4 +68,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     main(args)
 
-# python src/tvla/data/visualize_2d.py /mnt/20T/chq_large/tvla/droid/IPRL/success/2023-06-27/Tue_Jun_27_20:25:39_2023 --show_finger --cam_type side --save_path video_side_finger.mp4
+# python src/tvla/data/visualize_2d.py /mnt/18T/chq_large/tvla/droid/IPRL/success/2023-06-27/Tue_Jun_27_20:25:39_2023 --show_finger --cam_type side --show_action --save_path video_side_finger_action.mp4
