@@ -171,11 +171,11 @@ def process_one_episode(args_tuple):
             # Action
             Ttcp2base_actions = np.array([T_from_xyzrpy(cartesian_position) @ Ttcp2eef for cartesian_position in cartesian_position_actions])
             if Tbase2cam is not None:
-                Ttcp2cam_actions = np.array([Tbase2cam @ Ttcp2base for Ttcp2base in Ttcp2bases])
+                Ttcp2cam_actions = np.array([Tbase2cam @ Ttcp2base for Ttcp2base in Ttcp2base_actions])
             else:
                 Ttcp2cam_actions = None
             if Tbase2cam_side is not None:
-                Ttcp2cam_side_actions = np.array([Tbase2cam_side @ Ttcp2base for Ttcp2base in Ttcp2bases])
+                Ttcp2cam_side_actions = np.array([Tbase2cam_side @ Ttcp2base for Ttcp2base in Ttcp2base_actions])
             else:
                 Ttcp2cam_side_actions = None
 
