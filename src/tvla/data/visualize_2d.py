@@ -15,7 +15,6 @@ def main(args):
     if cam_type == "head":
         video_name = "cam_head.mp4"
         intrinsics = np.array(data["intrinsics"])
-        depth_scale = np.array(data["depth_scale"])
         if args.show_action:
             if "Ttcp2cam_action" not in data or data["Ttcp2cam_action"] is None:
                 raise ValueError("Ttcp2cam_action not found in data or is None")
@@ -27,7 +26,6 @@ def main(args):
     elif cam_type == "side":
         video_name = "cam_side.mp4"
         intrinsics = np.array(data["intrinsics_side"])
-        depth_scale = np.array(data["depth_scale_side"])
         if args.show_action:
             if "Ttcp2cam_side_action" not in data or data["Ttcp2cam_side_action"] is None:
                 raise ValueError("Ttcp2cam_side_action not found in data or is None")

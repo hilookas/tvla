@@ -172,7 +172,7 @@ def load_video(video_path, format="rgb24"):
 
     container.close()
 
-# Copy from https://github.com/NVlabs/FoundationPose/blob/main/Utils.py
+# Copy from: https://github.com/NVlabs/FoundationPose/blob/main/Utils.py
 
 def draw_xyz_axis(color, ob_in_cam, K=np.eye(3), scale=0.1, thickness=3, transparency=0, is_input_rgb=True, save_path=None):
     """
