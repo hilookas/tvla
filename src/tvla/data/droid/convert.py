@@ -190,19 +190,19 @@ def process_one_episode(args_tuple):
                 "intrinsics_hand": intrinsics_hand.tolist(),
                 "depth_scale_hand": depth_scale_hand,
 
-                "Ttcp2base": Ttcp2bases.tolist(),
-                "Ttcp2cam": Ttcp2cams.tolist() if Ttcp2cams is not None else None,
-                "Ttcp2cam_side": Ttcp2cam_sides.tolist() if Ttcp2cam_sides is not None else None,
-
-                "Ttcp2base_action": Ttcp2base_actions.tolist(),
-                "Ttcp2cam_action": Ttcp2cam_actions.tolist() if Ttcp2cam_actions is not None else None,
-                "Ttcp2cam_side_action": Ttcp2cam_side_actions.tolist() if Ttcp2cam_side_actions is not None else None,
-
-                "gripper_open": gripper_opens.tolist(),
-                "gripper_open_action": gripper_open_actions.tolist(),
-
                 "Tbase2cam": Tbase2cam.tolist() if Tbase2cam is not None else None,
                 "Tbase2cam_side": Tbase2cam_side.tolist() if Tbase2cam_side is not None else None,
+
+                "Ttcp2bases": Ttcp2bases.tolist(),
+                "Ttcp2cams": Ttcp2cams.tolist() if Ttcp2cams is not None else None,
+                "Ttcp2cam_sides": Ttcp2cam_sides.tolist() if Ttcp2cam_sides is not None else None,
+
+                "Ttcp2base_actions": Ttcp2base_actions.tolist(),
+                "Ttcp2cam_actions": Ttcp2cam_actions.tolist() if Ttcp2cam_actions is not None else None,
+                "Ttcp2cam_side_actions": Ttcp2cam_side_actions.tolist() if Ttcp2cam_side_actions is not None else None,
+
+                "gripper_opens": gripper_opens.tolist(),
+                "gripper_open_actions": gripper_open_actions.tolist(),
 
                 # aux info:
                 "real_fps": real_fps,
@@ -235,13 +235,13 @@ def main(args):
 
     Path(output_path).mkdir(parents=True, exist_ok=True)
 
-    episodes = list_episodes(droid_base_path, success_only=not args.all)
+    episode_meta_paths = list_episodes(droid_base_path, success_only=not args.all)
 
     with mp.Pool(args.num_workers) as pool:
-        r = list(tqdm(pool.imap(process_one_episode, [
-            (episode, droid_base_path, output_path, anno_path)
-            for episode in episodes
-        ]), total=len(episodes)))
+        _ = list(tqdm(pool.imap(process_one_episode, [
+            (episode_meta_path, droid_base_path, output_path, anno_path)
+            for episode_meta_path in episode_meta_paths
+        ]), total=len(episode_meta_paths)))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

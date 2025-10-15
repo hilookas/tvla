@@ -165,28 +165,28 @@ def main(args):
         intrinsics = np.array(data["intrinsics"])
         depth_scale = np.array(data["depth_scale"])
         if args.show_action:
-            if "Ttcp2cam_action" not in data or data["Ttcp2cam_action"] is None:
-                raise ValueError("Ttcp2cam_action not found in data or is None")
-            Ttcp2cams = np.array(data["Ttcp2cam_action"])
+            if "Ttcp2cam_actions" not in data or data["Ttcp2cam_actions"] is None:
+                raise ValueError("Ttcp2cam_actions not found in data or is None")
+            Ttcp2cams = np.array(data["Ttcp2cam_actions"])
         else:
-            if "Ttcp2cam" not in data or data["Ttcp2cam"] is None:
-                raise ValueError("Ttcp2cam not found in data or is None")
-            Ttcp2cams = np.array(data["Ttcp2cam"])
+            if "Ttcp2cams" not in data or data["Ttcp2cams"] is None:
+                raise ValueError("Ttcp2cams not found in data or is None")
+            Ttcp2cams = np.array(data["Ttcp2cams"])
     elif cam_type == "side":
         video_name = "cam_side.mp4"
         depth_video_name = "cam_side.depth.mkv"
         intrinsics = np.array(data["intrinsics_side"])
         depth_scale = np.array(data["depth_scale_side"])
         if args.show_action:
-            if "Ttcp2cam_side_action" not in data or data["Ttcp2cam_side_action"] is None:
-                raise ValueError("Ttcp2cam_side_action not found in data or is None")
-            Ttcp2cams = np.array(data["Ttcp2cam_side_action"])
+            if "Ttcp2cam_side_actions" not in data or data["Ttcp2cam_side_actions"] is None:
+                raise ValueError("Ttcp2cam_side_actions not found in data or is None")
+            Ttcp2cams = np.array(data["Ttcp2cam_side_actions"])
         else:
-            if "Ttcp2cam_side" not in data or data["Ttcp2cam_side"] is None:
-                raise ValueError("Ttcp2cam_side not found in data or is None")
-            Ttcp2cams = np.array(data["Ttcp2cam_side"])
+            if "Ttcp2cam_sides" not in data or data["Ttcp2cam_sides"] is None:
+                raise ValueError("Ttcp2cam_sides not found in data or is None")
+            Ttcp2cams = np.array(data["Ttcp2cam_sides"])
 
-    gripper_opens = np.array(data["gripper_open"])
+    gripper_opens = np.array(data["gripper_opens"])
 
     viewer = PointCloudViewer(video_save_path=save_path, fps=args.fps)
 
