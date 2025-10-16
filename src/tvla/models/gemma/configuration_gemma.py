@@ -81,8 +81,6 @@ class GemmaConfig(PretrainedConfig):
             Whether to use a bias in the query, key, value and output projection layers during self-attention.
         attention_dropout (`float`, *optional*, defaults to 0.0):
             The dropout ratio for the attention probabilities.
-        use_adarms (`bool`, *optional*, defaults to `False`):
-            Whether to use ADARMS.
         adarms_cond_dim (`int`, *optional*, defaults to `None`):
             The dimension of the ADARMS condition.
     ```python
@@ -134,7 +132,6 @@ class GemmaConfig(PretrainedConfig):
         rope_theta=10000.0,
         attention_bias=False,
         attention_dropout=0.0,
-        use_adarms: bool=False,
         adarms_cond_dim: Optional[int]=None,
         use_norm: bool=True,
         **kwargs,
@@ -155,13 +152,7 @@ class GemmaConfig(PretrainedConfig):
         self.rope_theta = rope_theta
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
-        self.use_adarms = use_adarms
         self.adarms_cond_dim = adarms_cond_dim
-
-        # Set default for adarms_cond_dim if use_adarms is True
-        if self.use_adarms and self.adarms_cond_dim is None:
-            self.adarms_cond_dim = self.hidden_size
-
         self.use_norm = use_norm
 
         super().__init__(

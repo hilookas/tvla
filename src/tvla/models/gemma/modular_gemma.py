@@ -113,8 +113,6 @@ class GemmaConfig(PretrainedConfig):
             Whether to use a bias in the query, key, value and output projection layers during self-attention.
         attention_dropout (`float`, *optional*, defaults to 0.0):
             The dropout ratio for the attention probabilities.
-        use_adarms (`bool`, *optional*, defaults to `False`):
-            Whether to use ADARMS.
         adarms_cond_dim (`int`, *optional*, defaults to `None`):
             The dimension of the ADARMS condition.
     ```python
@@ -166,7 +164,6 @@ class GemmaConfig(PretrainedConfig):
         rope_theta=10000.0,
         attention_bias=False,
         attention_dropout=0.0,
-        use_adarms: bool=False,
         adarms_cond_dim: Optional[int]=None,
         use_norm: bool=True,
         **kwargs,
@@ -187,13 +184,7 @@ class GemmaConfig(PretrainedConfig):
         self.rope_theta = rope_theta
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
-        self.use_adarms = use_adarms
         self.adarms_cond_dim = adarms_cond_dim
-
-        # Set default for adarms_cond_dim if use_adarms is True
-        if self.use_adarms and self.adarms_cond_dim is None:
-            self.adarms_cond_dim = self.hidden_size
-
         self.use_norm = use_norm
 
         super().__init__(
@@ -480,15 +471,14 @@ class GemmaAttention(LlamaAttention):
 
 class GemmaDecoderLayer(LlamaDecoderLayer):
     def __init__(self, config: GemmaConfig, layer_idx: int):
-        cond_dim = getattr(config, 'adarms_cond_dim', None) if getattr(config, 'use_adarms', False) else None
         super().__init__()
         self.hidden_size = config.hidden_size
 
         self.self_attn = GemmaAttention(config=config, layer_idx=layer_idx)
 
         self.mlp = GemmaMLP(config)
-        self.input_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
-        self.post_attention_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
+        self.input_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=config.adarms_cond_dim)
+        self.post_attention_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=config.adarms_cond_dim)
 
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
@@ -547,7 +537,6 @@ class GemmaPreTrainedModel(LlamaPreTrainedModel):
 
 class GemmaModel(LlamaModel):
     def __init__(self, config: GemmaConfig):
-        cond_dim = getattr(config, 'adarms_cond_dim', None) if getattr(config, 'use_adarms', False) else None
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -556,7 +545,7 @@ class GemmaModel(LlamaModel):
         self.layers = nn.ModuleList(
             [GemmaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
+        self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=config.adarms_cond_dim)
         self.rotary_emb = GemmaRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
