@@ -47,46 +47,29 @@ for task_suite_name, task_id in tqdm.tqdm(LiberoEnv.list_tasks("libero_object"))
     task_episodes, task_successes = 0, 0
     for episode_idx in tqdm.tqdm(range(num_trials_per_task)):
         logging.info(f"Starting episode {task_episodes+1}...")
-        
+
         obs = libero_env.reset(episode_idx)
-        
+
         try:
             while True:
-                # eef_pos, eef_quat, gripper_qpos = uea2libero_state(
-                #     obs["Ttcp2cam"], obs["gripper_open"],
-                #     get_camera_extrinsic_matrix(libero_env.env.sim, "agentview") # context
-                # )
-                
                 observation = {
-                    # 'observation.state': torch.tensor(np.concatenate((
-                    #     eef_pos,
-                    #     quat2axisangle(eef_quat),
-                    #     gripper_qpos,
-                    # ))).unsqueeze(0),
                     'observation.state': torch.tensor(obs["original_state"]).unsqueeze(0),
                     'observation.images.image': torch.tensor(obs['image'][:, ::-1] / 255.0).permute(2, 0, 1).unsqueeze(0), # Images from LeRobot are typically in [B, C, H, W] format and normalized to [0, 1].
                     'observation.images.image2': torch.tensor(obs['wrist_image'][:, ::-1] / 255.0).permute(2, 0, 1).unsqueeze(0),
                     "task": [obs["instruction"]],
                 }
-                            
+
                 observation = preprocessor(observation)
                 with torch.inference_mode():
                     action = policy.select_action(observation)
                 action = postprocessor(action)
-                
+
                 action = action.cpu().numpy().squeeze(0)
-                
-                # Ttcp2cam, gripper_open = libero2uea_action(
-                #     action[:3], action[3:6], action[6], 
-                #     obs["Ttcp2cam"], get_camera_extrinsic_matrix(libero_env.env.sim, "agentview") # context
-                # )
-                
+
                 action = {
-                    # "Ttcp2cam": Ttcp2cam,
-                    # "gripper_open": gripper_open,
                     "original_action": action,
                 }
-                
+
                 # Execute action in environment
                 obs = libero_env.step(action)
                 if obs["success"]:
@@ -101,7 +84,7 @@ for task_suite_name, task_id in tqdm.tqdm(LiberoEnv.list_tasks("libero_object"))
         # Update episode counters
         task_episodes += 1
         total_episodes += 1
-        
+
         # Save video and log results
         libero_env.finish()  # save video
 
