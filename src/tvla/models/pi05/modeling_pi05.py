@@ -32,12 +32,6 @@ from tvla.models.gemma.modeling_gemma import GemmaModel, GemmaForCausalLM, apply
 from tvla.models.paligemma.configuration_paligemma import PaliGemmaConfig
 from tvla.models.paligemma.modeling_paligemma import PaliGemmaModel, PaliGemmaForConditionalGeneration
 
-CONFIG_MAPPING.register("gemma", GemmaConfig, exist_ok=True)
-CONFIG_MAPPING.register("paligemma", PaliGemmaConfig, exist_ok=True)
-
-MODEL_MAPPING.register(GemmaConfig, GemmaModel, exist_ok=True)
-MODEL_MAPPING.register(PaliGemmaConfig, PaliGemmaModel, exist_ok=True)
-
 from lerobot.configs.policies import PreTrainedConfig
 from .configuration_pi05 import PI05Config
 from lerobot.policies.pretrained import PreTrainedPolicy, T

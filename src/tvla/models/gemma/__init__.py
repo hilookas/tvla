@@ -28,3 +28,10 @@ else:
 
     _file = globals()["__file__"]
     sys.modules[__name__] = _LazyModule(__name__, _file, define_import_structure(_file), module_spec=__spec__)
+
+from transformers.models.auto import CONFIG_MAPPING, MODEL_MAPPING
+from .configuration_gemma import GemmaConfig
+from .modeling_gemma import GemmaModel
+
+CONFIG_MAPPING.register("gemma", GemmaConfig, exist_ok=True)
+MODEL_MAPPING.register(GemmaConfig, GemmaModel, exist_ok=True)

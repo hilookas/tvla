@@ -1,3 +1,6 @@
+import tvla.models.gemma # Register ours
+import tvla.models.paligemma # Register ours
+
 from tvla.models.pi05.modeling_pi05 import PI05Policy
 
 from lerobot.processor import PolicyProcessorPipeline

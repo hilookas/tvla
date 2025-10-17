@@ -26,3 +26,10 @@ else:
 
     _file = globals()["__file__"]
     sys.modules[__name__] = _LazyModule(__name__, _file, define_import_structure(_file), module_spec=__spec__)
+
+from transformers.models.auto import CONFIG_MAPPING, MODEL_MAPPING
+from .configuration_paligemma import PaliGemmaConfig
+from .modeling_paligemma import PaliGemmaModel
+
+CONFIG_MAPPING.register("paligemma", PaliGemmaConfig, exist_ok=True)
+MODEL_MAPPING.register(PaliGemmaConfig, PaliGemmaModel, exist_ok=True)

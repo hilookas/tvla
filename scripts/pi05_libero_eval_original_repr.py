@@ -1,3 +1,6 @@
+import tvla.models.gemma # Register ours
+import tvla.models.paligemma # Register ours
+
 from tvla.models.pi05.modeling_pi05 import PI05Policy
 
 from lerobot.processor import PolicyProcessorPipeline
@@ -9,20 +12,18 @@ from lerobot.processor.converters import (
     transition_to_policy_action,
 )
 
-from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
-
 policy = PI05Policy.from_pretrained("lerobot/pi05_libero_finetuned")
 
 preprocessor = PolicyProcessorPipeline.from_pretrained(
     pretrained_model_name_or_path="lerobot/pi05_libero_finetuned",
-    config_filename=f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json",
+    config_filename="policy_preprocessor.json",
     overrides={"device_processor": {"device": str(policy.config.device)}},
     to_transition=batch_to_transition,
     to_output=transition_to_batch,
 )
 postprocessor = PolicyProcessorPipeline.from_pretrained(
     pretrained_model_name_or_path="lerobot/pi05_libero_finetuned",
-    config_filename=f"{POLICY_POSTPROCESSOR_DEFAULT_NAME}.json",
+    config_filename="policy_postprocessor.json",
     overrides={},
     to_transition=policy_action_to_transition,
     to_output=transition_to_policy_action,
@@ -59,10 +60,10 @@ for task_suite_name, task_id in tqdm.tqdm(LiberoEnv.list_tasks("libero_object"))
                     "task": [obs["instruction"]],
                 }
 
-                observation = preprocessor(observation)
+                observation_model = preprocessor(observation)
                 with torch.inference_mode():
-                    action = policy.select_action(observation)
-                action = postprocessor(action)
+                    action_model = policy.select_action(observation_model)
+                action = postprocessor(action_model)
 
                 action = action.cpu().numpy().squeeze(0)
 
