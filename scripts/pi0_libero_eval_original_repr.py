@@ -14,31 +14,14 @@ model = Pi0Model.from_pretrained(
     # device_map="auto",
 )
 
-from lerobot.processor import PolicyProcessorPipeline
+from tvla.models.paligemma.processing_paligemma import PaliGemmaProcessor
 
-from lerobot.processor.converters import (
-    batch_to_transition,
-    policy_action_to_transition,
-    transition_to_batch,
-    transition_to_policy_action,
-)
+processor = PaliGemmaProcessor.from_pretrained("google/paligemma-3b-pt-224")
 
-import tvla.models.pi05.processor_pi05
+from safetensors.torch import load_file as safe_load_file
 
-preprocessor = PolicyProcessorPipeline.from_pretrained(
-    pretrained_model_name_or_path="lerobot/pi05_libero_finetuned",
-    config_filename="policy_preprocessor.json",
-    overrides={"device_processor": {"device": "cpu"}},
-    to_transition=batch_to_transition,
-    to_output=transition_to_batch,
-)
-postprocessor = PolicyProcessorPipeline.from_pretrained(
-    pretrained_model_name_or_path="lerobot/pi05_libero_finetuned",
-    config_filename="policy_postprocessor.json",
-    overrides={},
-    to_transition=policy_action_to_transition,
-    to_output=transition_to_policy_action,
-)
+state_normalizer_state_dict = safe_load_file("/home/ubuntu/.cache/huggingface/hub/models--lerobot--pi05_libero_finetuned/snapshots/d8419fc249cbb1f29b0c528f05c0d2fe50f46855/policy_preprocessor_step_2_normalizer_processor.safetensors")
+action_unnormalizer_state_dict = safe_load_file("/home/ubuntu/.cache/huggingface/hub/models--lerobot--pi05_libero_finetuned/snapshots/d8419fc249cbb1f29b0c528f05c0d2fe50f46855/policy_postprocessor_step_0_unnormalizer_processor.safetensors")
 
 from tvla.envs.libero.env import LiberoEnv, get_camera_extrinsic_matrix
 from tvla.envs.libero.transform import uea2libero_state, libero2uea_action, quat2axisangle
@@ -68,80 +51,66 @@ for task_suite_name, task_id in tqdm.tqdm(LiberoEnv.list_tasks("libero_object"))
 
         try:
             while True:
-                observation = {
-                    'observation.state': torch.tensor(obs["original_state"]).unsqueeze(0),
-                    'observation.images.image': torch.tensor(obs['image'][:, ::-1] / 255.0).permute(2, 0, 1).unsqueeze(0), # Images from LeRobot are typically in [B, C, H, W] format and normalized to [0, 1].
-                    'observation.images.image2': torch.tensor(obs['wrist_image'][:, ::-1] / 255.0).permute(2, 0, 1).unsqueeze(0),
-                    "task": [obs["instruction"]],
-                }
-
-                observation_model = preprocessor(observation)
                 with torch.inference_mode():
                     # Action queue logic for n_action_steps > 1
                     if len(action_queue) == 0:
                         state = None # for pi05
-                        lang_tokens = observation_model["observation.language.tokens"]
-                        lang_masks = observation_model["observation.language.attention_mask"]
 
-                        images = []
-                        img_masks = []
+                        state_tensor = (torch.tensor(obs["original_state"]).unsqueeze(0) - state_normalizer_state_dict["observation.state.mean"]) / state_normalizer_state_dict["observation.state.std"]
 
-                        # Get device from model parameters
-                        device = "cpu"
+                        # State (Pi05)
+                        state_np = state_tensor.cpu().numpy()[0]
 
-                        # Preprocess image features present in the batch
-                        for key in ["observation.images.image", "observation.images.image2"]:
-                            img = observation_model[key]
+                        max_state_dim = 32
+                        padded_state_np = np.zeros(max_state_dim)
+                        padded_state_np[:state_np.shape[0]] = state_np
 
-                            # Ensure tensor is on the same device as the model
-                            if img.device != device:
-                                img = img.to(device)
+                        task = obs["instruction"]
+                        cleaned_text = task.strip().replace("_", " ").replace("\n", " ")
+                        state_str = " ".join(map(str, np.digitize(padded_state_np, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1))
+                        full_prompt = f"Task: {cleaned_text}, State: {state_str};\nAction: "
 
-                            # Ensure float32 dtype for consistency
-                            if img.dtype != torch.float32:
-                                img = img.to(torch.float32)
+                        # Tokenizer of PaliGemma dont't add bos token which is different from default tokenizer
+                        # Pi0 need default tokenizer which added bos token
+                        #     from transformers import AutoTokenizer
+                        #     AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")(full_prompt)
+                        assert processor.tokenizer.add_bos_token == False
+                        processor.tokenizer.add_bos_token = True
+                        inputs = processor.tokenizer(
+                            full_prompt,
+                            max_length=200, # tokenizer_max_length
+                            truncation=True,
+                            padding="max_length",
+                            padding_side="right",
+                            return_tensors="pt",
+                        )
+                        processor.tokenizer.add_bos_token = False
 
-                            # from openpi preprocess_observation_pytorch: Handle both [B, C, H, W] and [B, H, W, C] formats
-                            assert img.shape[1] == 3  # Check if channels are in dimension 1
+                        lang_tokens = inputs["input_ids"]
+                        lang_masks = inputs["attention_mask"].to(torch.bool)
 
-                            import torch.nn.functional as F  # noqa: N812
+                        # Image
+                        pixel_values = processor.image_processor([
+                            obs['image'][:, ::-1].transpose(2, 0, 1), # TODO
+                            obs['wrist_image'][:, ::-1].transpose(2, 0, 1),
+                            np.zeros((3, 256, 256)),
+                        ])
 
-                            # Resize
-                            img = F.interpolate(
-                                img,
-                                size=(224, 224),
-                                mode="bilinear",
-                                align_corners=False,
-                            )
-
-                            # Normalize from [0,1] to [-1,1] as expected by siglip
-                            img = img * 2.0 - 1.0
-
-                            images.append(img)
-                            # Create mask (all ones for real images)
-                            bsize = img.shape[0]
-                            mask = torch.ones(bsize, dtype=torch.bool, device=device)
-                            img_masks.append(mask)
-
-                        # Create image features not present in the batch as fully 0 padded images
-                        for _num_empty_cameras in range(len(["observation.images.empty_camera_0"])):
-                            img = torch.ones_like(img) * -1  # Padded with -1 for SigLIP
-                            mask = torch.zeros_like(mask)  # Mask is zero for empty cameras
-                            images.append(img)
-                            img_masks.append(mask)
+                        images = [torch.tensor(pixel_value).unsqueeze(0) for pixel_value in pixel_values["pixel_values"]]
+                        img_masks = [torch.ones(1, dtype=torch.bool), torch.ones(1, dtype=torch.bool), torch.zeros(1, dtype=torch.bool)]
 
                         # images, img_masks, lang_tokens, lang_masks, state = preprocess_observation_pytorch(observation, train=False) # train=True when training
                         action = model.sample_action(images, img_masks, lang_tokens, lang_masks, state)
                         original_action_dim = 7
 
-                        # Transpose to get shape (n_action_steps, batch_size, action_dim)
-                        action_queue.extend(action[:, :, :original_action_dim].transpose(0, 1))
+                        # Transpose to get shape (n_action_steps, action_dim)
+                        action_queue.extend(action[:, :, :original_action_dim].squeeze(0))
 
                     action_model = action_queue.popleft()
 
-                action = postprocessor(action_model)
+                action = action_model * action_unnormalizer_state_dict["action.std"] + action_unnormalizer_state_dict["action.mean"]
 
-                action = action.cpu().numpy().squeeze(0)
+                action = action.cpu().numpy()
 
                 action = {
                     "original_action": action,

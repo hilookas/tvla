@@ -20,6 +20,8 @@ def main():
     # Load the safetensors
     state_dict = safe_load_file(input_path + "/" + "model.safetensors")
 
+    # Rename for weight tieing
+    # See: https://huggingface.co/docs/safetensors/torch_shared_tensors
     state_dict["model.paligemma_with_expert.paligemma.model.language_model.embed_tokens.weight"] = state_dict["model.paligemma_with_expert.paligemma.lm_head.weight"]
     del state_dict["model.paligemma_with_expert.paligemma.lm_head.weight"]
     state_dict["model.paligemma_with_expert.gemma_expert.model.embed_tokens.weight"] = state_dict["model.paligemma_with_expert.gemma_expert.lm_head.weight"]
