@@ -30,13 +30,19 @@ def main():
     state_dict["model.paligemma_with_expert.gemma_expert.model.embed_tokens.weight"] = state_dict["model.paligemma_with_expert.gemma_expert.lm_head.weight"]
     del state_dict["model.paligemma_with_expert.gemma_expert.lm_head.weight"]
 
-    # Strip the "model." prefix from all keys in state_dict
+    # Rename dict
     new_state_dict = {}
     for k, v in state_dict.items():
-        if k.startswith("model."):
-            new_key = k[len("model."):]
-        else:
-            new_key = k
+        new_key = k
+
+        # Strip the "model." prefix from all keys in state_dict
+        if new_key.startswith("model."):
+            new_key = new_key[len("model."):]
+
+        # Strip the "paligemma_with_expert." from all keys in state_dict
+        if "paligemma_with_expert." in k:
+            new_key = new_key.replace("paligemma_with_expert.", "")
+
         new_state_dict[new_key] = v
 
     # Save the new safetensors file in the output_path directory

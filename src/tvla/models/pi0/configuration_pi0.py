@@ -11,8 +11,6 @@ class Pi0Config(PretrainedConfig):
     model_type = "pi0"
 
     pi05 = True
-    paligemma_variant = "gemma_2b"
-    action_expert_variant = "gemma_300m"
     action_horizon = 50  # chunk_size
     action_dim = 32  # max_action_dim
     pass

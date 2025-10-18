@@ -2,8 +2,13 @@ import tvla.models.gemma # Register ours
 import tvla.models.paligemma # Register ours
 
 from tvla.models.pi0.modeling_pi0 import Pi0Model
-
 from tvla.models.paligemma.processing_paligemma import PaliGemmaProcessor
+
+from typing import cast, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tvla.models.gemma.tokenization_gemma import GemmaTokenizer
+    from transformers.models.siglip.image_processing_siglip import SiglipImageProcessor
 
 from safetensors.torch import load_file as safe_load_file
 
@@ -18,6 +23,7 @@ import logging
 
 from collections import deque
 
+# Load model and processor
 model = Pi0Model.from_pretrained(
     "/home/ubuntu/tvla/pi05_libero_finetuned_transformers",
     # dtype=torch.bfloat16,
@@ -26,6 +32,11 @@ model = Pi0Model.from_pretrained(
 
 processor = PaliGemmaProcessor.from_pretrained("google/paligemma-3b-pt-224")
 
+if TYPE_CHECKING:
+    processor.tokenizer = cast(GemmaTokenizer, processor.tokenizer) # type hint
+    processor.image_processor = cast(SiglipImageProcessor, processor.image_processor) # type hint
+
+# Load norms
 state_normalizer_state_dict = safe_load_file("/home/ubuntu/.cache/huggingface/hub/models--lerobot--pi05_libero_finetuned/snapshots/d8419fc249cbb1f29b0c528f05c0d2fe50f46855/policy_preprocessor_step_2_normalizer_processor.safetensors")
 action_unnormalizer_state_dict = safe_load_file("/home/ubuntu/.cache/huggingface/hub/models--lerobot--pi05_libero_finetuned/snapshots/d8419fc249cbb1f29b0c528f05c0d2fe50f46855/policy_postprocessor_step_0_unnormalizer_processor.safetensors")
 
@@ -35,12 +46,15 @@ state_norm_std = state_normalizer_state_dict["observation.state.std"].numpy()
 action_norm_mean = action_unnormalizer_state_dict["action.mean"].numpy()
 action_norm_std = action_unnormalizer_state_dict["action.std"].numpy()
 
+# Env args
+uea_repr = True
+
 num_trials_per_task = 10
 
 # Start evaluation
 total_episodes, total_successes = 0, 0
 for task_suite_name, task_id in tqdm.tqdm(LiberoEnv.list_tasks("libero_object")):
-    libero_env = LiberoEnv(task_suite_name, task_id, uea_repr=False)
+    libero_env = LiberoEnv(task_suite_name, task_id, uea_repr=uea_repr)
 
     # Start episodes for current task
     task_episodes, task_successes = 0, 0
@@ -54,13 +68,27 @@ for task_suite_name, task_id in tqdm.tqdm(LiberoEnv.list_tasks("libero_object"))
 
         try:
             while True:
+                if uea_repr:
+                    eef_pos, eef_quat, gripper_qpos = uea2libero_state(
+                        obs["Ttcp2cam"], obs["gripper_open"],
+                        get_camera_extrinsic_matrix(libero_env.env.sim, "agentview") # context
+                    )
+
+                    original_state = np.concatenate((
+                        eef_pos,
+                        quat2axisangle(eef_quat),
+                        gripper_qpos,
+                    ))
+                else:
+                    original_state = obs["original_state"]
+
                 # Action queue logic for n_action_steps > 1
                 if len(action_queue) == 0:
                     with torch.inference_mode():
                         state = None # for pi05
 
                         # State (Pi05)
-                        state_np = (obs["original_state"] - state_norm_mean) / state_norm_std
+                        state_np = (original_state - state_norm_mean) / state_norm_std
 
                         max_state_dim = 32
                         padded_state_np = np.zeros(max_state_dim)
@@ -99,20 +127,29 @@ for task_suite_name, task_id in tqdm.tqdm(LiberoEnv.list_tasks("libero_object"))
                         images = [torch.tensor(pixel_value).unsqueeze(0) for pixel_value in pixel_values["pixel_values"]]
                         img_masks = [torch.ones(1, dtype=torch.bool), torch.ones(1, dtype=torch.bool), torch.zeros(1, dtype=torch.bool)]
 
-                        # images, img_masks, lang_tokens, lang_masks, state = preprocess_observation_pytorch(observation, train=False) # train=True when training
                         action = model.sample_action(images, img_masks, lang_tokens, lang_masks, state)
 
-                        # Transpose to get shape (n_action_steps, action_dim)
+                        # Get actions
                         original_action_dim = 7
-                        action_queue.extend(action[:, :, :original_action_dim].squeeze(0).numpy())
+                        for action_model in action[:, :, :original_action_dim].squeeze(0).numpy():
+                            action_queue.append(action_model * action_norm_std + action_norm_mean)
 
-                action_model = action_queue.popleft()
+                action = action_queue.popleft()
 
-                action = action_model * action_norm_std + action_norm_mean
+                if uea_repr:
+                    Ttcp2cam, gripper_open = libero2uea_action(
+                        action[:3], action[3:6], action[6],
+                        obs["Ttcp2cam"], get_camera_extrinsic_matrix(libero_env.env.sim, "agentview") # context
+                    )
 
-                action = {
-                    "original_action": action,
-                }
+                    action = {
+                        "Ttcp2cam": Ttcp2cam,
+                        "gripper_open": gripper_open,
+                    }
+                else:
+                    action = {
+                        "original_action": action,
+                    }
 
                 # Execute action in environment
                 obs = libero_env.step(action)

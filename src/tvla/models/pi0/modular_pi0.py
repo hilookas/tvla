@@ -13,142 +13,6 @@ from collections.abc import Sequence
 
 import math
 
-class PaliGemmaWithExpertModel(nn.Module):
-    def __init__(
-        self,
-        vlm_config_hf,
-        action_expert_config_hf,
-    ):
-        super().__init__()
-
-        self.paligemma = PaliGemmaForConditionalGeneration(config=vlm_config_hf)
-        self.gemma_expert = GemmaForCausalLM(config=action_expert_config_hf)
-        # self.gemma_expert.model.embed_tokens = None
-
-    def forward(
-        self,
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        past_key_values: list[torch.FloatTensor] | None = None,
-        inputs_embeds: list[torch.FloatTensor] | None = None,
-        use_cache: bool | None = None,
-        adarms_cond:list[torch.Tensor] = [None, None],
-    ):
-        if inputs_embeds[1] is None:
-            prefix_output = self.paligemma.language_model.forward(
-                inputs_embeds=inputs_embeds[0],
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                use_cache=use_cache,
-                adarms_cond=adarms_cond[0],
-            )
-
-            return [prefix_output.last_hidden_state, None], prefix_output.past_key_values
-        elif inputs_embeds[0] is None:
-            suffix_output = self.gemma_expert.model.forward(
-                inputs_embeds=inputs_embeds[1],
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                use_cache=use_cache,
-                adarms_cond=adarms_cond[1],
-            )
-
-            return [None, suffix_output.last_hidden_state], None
-        else:
-            models = [self.paligemma.language_model, self.gemma_expert.model]
-
-            # Process all layers
-            for layer_idx in range(self.paligemma.config.text_config.num_hidden_layers):
-                query_states = []
-                key_states = []
-                value_states = []
-                gates = []
-                for model_idx, hidden_states in enumerate(inputs_embeds):
-                    layer = models[model_idx].layers[layer_idx]
-                    hidden_states, gate = layer.input_layernorm(hidden_states, cond=adarms_cond[model_idx])  # noqa: PLW2901
-                    gates.append(gate)
-
-                    input_shape = hidden_states.shape[:-1]
-                    hidden_shape = (*input_shape, -1, layer.self_attn.head_dim)
-                    query_state = layer.self_attn.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-                    key_state = layer.self_attn.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-                    value_state = layer.self_attn.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-
-                    query_states.append(query_state)
-                    key_states.append(key_state)
-                    value_states.append(value_state)
-
-                # Concatenate and process attention
-                query_states = torch.cat(query_states, dim=2)
-                key_states = torch.cat(key_states, dim=2)
-                value_states = torch.cat(value_states, dim=2)
-
-                dummy_tensor = torch.zeros(
-                    query_states.shape[0],
-                    query_states.shape[2],
-                    query_states.shape[-1],
-                    device=query_states.device,
-                    dtype=query_states.dtype,
-                )
-                cos, sin = self.paligemma.model.language_model.rotary_emb(dummy_tensor, position_ids)
-                query_states, key_states = apply_rotary_pos_emb(
-                    query_states, key_states, cos, sin, unsqueeze_dim=1
-                )
-
-                batch_size = query_states.shape[0]
-                scaling = self.paligemma.language_model.layers[layer_idx].self_attn.scaling
-
-                # Attention computation
-                att_output, _ = eager_attention_forward(
-                    self.paligemma.language_model.layers[layer_idx].self_attn,
-                    query_states,
-                    key_states,
-                    value_states,
-                    attention_mask,
-                    scaling,
-                )
-                # Get head_dim from the current layer, not from the model
-                head_dim = self.paligemma.language_model.layers[layer_idx].self_attn.head_dim
-                att_output = att_output.reshape(batch_size, -1, 1 * 8 * head_dim)
-
-                # Process layer outputs
-                outputs_embeds = []
-                start_pos = 0
-                for model_idx, hidden_states in enumerate(inputs_embeds):
-                    layer = models[model_idx].layers[layer_idx]
-                    end_pos = start_pos + hidden_states.shape[1]
-
-                    if att_output.dtype != layer.self_attn.o_proj.weight.dtype:
-                        att_output = att_output.to(layer.self_attn.o_proj.weight.dtype)
-                    out_emb = layer.self_attn.o_proj(att_output[:, start_pos:end_pos])
-
-                    # first residual
-                    out_emb = hidden_states + out_emb * gates[model_idx]
-                    after_first_residual = out_emb.clone()
-                    out_emb, gate = layer.post_attention_layernorm(out_emb, cond=adarms_cond[model_idx])
-
-                    out_emb = layer.mlp(out_emb)
-                    # second residual
-                    out_emb = after_first_residual + out_emb * gate
-                    outputs_embeds.append(out_emb)
-                    start_pos = end_pos
-
-                inputs_embeds = outputs_embeds
-
-            # final norm
-            outputs_embeds = []
-            for model_idx, hidden_states in enumerate(inputs_embeds):
-                out_emb, _ = models[model_idx].norm(hidden_states, cond=adarms_cond[model_idx])
-                outputs_embeds.append(out_emb)
-
-            prefix_output = outputs_embeds[0]
-            suffix_output = outputs_embeds[1]
-            prefix_past_key_values = None
-
-            return [prefix_output, suffix_output], prefix_past_key_values
-
 
 def create_sinusoidal_pos_embedding(
     time: torch.tensor, dimension: int, min_period: float, max_period: float, device="cpu"
@@ -219,8 +83,6 @@ class Pi0Config(PretrainedConfig):
     model_type = "pi0"
 
     pi05 = True
-    paligemma_variant = "gemma_2b"
-    action_expert_variant = "gemma_300m"
     action_horizon = 50 # chunk_size
     action_dim = 32 # max_action_dim
     pass
@@ -234,38 +96,27 @@ class Pi0Model(Pi0PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
-        GEMMA_SIZE = {
-            "gemma_300m": { # 311M params
-                "width": 1024,
-                "mlp_dim": 4096,
-            },
-            "gemma_2b": {
-                "width": 2048,
-                "mlp_dim": 16384,
-            }
-        }
+        paligemma_config = PaliGemmaConfig(use_norm=False)
+        paligemma_config._vocab_size = 257152  # noqa: SLF001
+        paligemma_config.image_token_index = 257152
+        paligemma_config.text_config.hidden_size = 2048
+        paligemma_config.text_config.intermediate_size = 16384
+        paligemma_config.text_config.num_hidden_layers = 18
+        paligemma_config.text_config.num_attention_heads = 8
+        paligemma_config.text_config.head_dim = 256
+        paligemma_config.text_config.num_key_value_heads = 1
+        paligemma_config.text_config.hidden_activation = "gelu_pytorch_tanh"
+        paligemma_config.text_config.torch_dtype = "float32"
+        paligemma_config.text_config.vocab_size = 257152
+        paligemma_config.text_config.adarms_cond_dim = None
+        paligemma_config.vision_config.intermediate_size = 4304
+        paligemma_config.vision_config.projection_dim = 2048
+        paligemma_config.vision_config.projector_hidden_act = "gelu_fast"
+        paligemma_config.vision_config.torch_dtype = "float32"
 
-        vlm_config_hf = PaliGemmaConfig(use_norm=False)
-        vlm_config_hf._vocab_size = 257152  # noqa: SLF001
-        vlm_config_hf.image_token_index = 257152
-        vlm_config_hf.text_config.hidden_size = GEMMA_SIZE[self.config.paligemma_variant]["width"]
-        vlm_config_hf.text_config.intermediate_size = GEMMA_SIZE[self.config.paligemma_variant]["mlp_dim"]
-        vlm_config_hf.text_config.num_hidden_layers = 18
-        vlm_config_hf.text_config.num_attention_heads = 8
-        vlm_config_hf.text_config.head_dim = 256
-        vlm_config_hf.text_config.num_key_value_heads = 1
-        vlm_config_hf.text_config.hidden_activation = "gelu_pytorch_tanh"
-        vlm_config_hf.text_config.torch_dtype = "float32"
-        vlm_config_hf.text_config.vocab_size = 257152
-        vlm_config_hf.text_config.adarms_cond_dim = None
-        vlm_config_hf.vision_config.intermediate_size = 4304
-        vlm_config_hf.vision_config.projection_dim = 2048
-        vlm_config_hf.vision_config.projector_hidden_act = "gelu_fast"
-        vlm_config_hf.vision_config.torch_dtype = "float32"
-
-        action_expert_config_hf = GemmaConfig(
-            hidden_size=GEMMA_SIZE[self.config.action_expert_variant]['width'],
-            intermediate_size=GEMMA_SIZE[self.config.action_expert_variant]["mlp_dim"],
+        gemma_expert_config = GemmaConfig(
+            hidden_size=1024,
+            intermediate_size=4096,
             num_hidden_layers=18,
             num_attention_heads=8,
             head_dim=256,
@@ -273,28 +124,26 @@ class Pi0Model(Pi0PreTrainedModel):
             vocab_size=257152,
             hidden_activation="gelu_pytorch_tanh",
             torch_dtype="float32",
-            adarms_cond_dim=GEMMA_SIZE[self.config.action_expert_variant]['width'] if self.config.pi05 else None,
+            adarms_cond_dim=1024 if self.config.pi05 else None, # same as hidden_size
             use_norm=False,
         )
 
-        self.paligemma_with_expert = PaliGemmaWithExpertModel(
-            vlm_config_hf,
-            action_expert_config_hf,
-        )
+        self.paligemma = PaliGemmaForConditionalGeneration(config=paligemma_config)
+        self.gemma_expert = GemmaForCausalLM(config=gemma_expert_config)
 
-        self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
-        self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"
+        self.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
+        self.paligemma.language_model.config._attn_implementation = "eager"
 
-        self.action_in_proj = nn.Linear(32, action_expert_config_hf.hidden_size)
-        self.action_out_proj = nn.Linear(action_expert_config_hf.hidden_size, 32)
+        self.action_in_proj = nn.Linear(32, gemma_expert_config.hidden_size)
+        self.action_out_proj = nn.Linear(gemma_expert_config.hidden_size, 32)
 
         if self.config.pi05:
-            self.time_mlp_in = nn.Linear(action_expert_config_hf.hidden_size, action_expert_config_hf.hidden_size)
-            self.time_mlp_out = nn.Linear(action_expert_config_hf.hidden_size, action_expert_config_hf.hidden_size)
+            self.time_mlp_in = nn.Linear(gemma_expert_config.hidden_size, gemma_expert_config.hidden_size)
+            self.time_mlp_out = nn.Linear(gemma_expert_config.hidden_size, gemma_expert_config.hidden_size)
         else:
-            self.state_proj = nn.Linear(32, action_expert_config_hf.hidden_size)
-            self.action_time_mlp_in = nn.Linear(2 * action_expert_config_hf.hidden_size, action_expert_config_hf.hidden_size)
-            self.action_time_mlp_out = nn.Linear(action_expert_config_hf.hidden_size, action_expert_config_hf.hidden_size)
+            self.state_proj = nn.Linear(32, gemma_expert_config.hidden_size)
+            self.action_time_mlp_in = nn.Linear(2 * gemma_expert_config.hidden_size, gemma_expert_config.hidden_size)
+            self.action_time_mlp_out = nn.Linear(gemma_expert_config.hidden_size, gemma_expert_config.hidden_size)
 
         torch.set_float32_matmul_precision("high")
 
@@ -326,7 +175,7 @@ class Pi0Model(Pi0PreTrainedModel):
 
         # Process images
         for img, img_mask in zip(images, img_masks, strict=True):
-            img_emb = self.paligemma_with_expert.paligemma.model.get_image_features(img)
+            img_emb = self.paligemma.model.get_image_features(img)
 
             bsize, num_img_embs = img_emb.shape[:2]
 
@@ -337,7 +186,7 @@ class Pi0Model(Pi0PreTrainedModel):
             att_masks += [0] * num_img_embs
 
         # Process language tokens
-        lang_emb = self.paligemma_with_expert.paligemma.language_model.embed_tokens(lang_tokens)
+        lang_emb = self.paligemma.language_model.embed_tokens(lang_tokens)
         lang_emb_dim = lang_emb.shape[-1]
         lang_emb = lang_emb * math.sqrt(lang_emb_dim)
 
@@ -425,6 +274,101 @@ class Pi0Model(Pi0PreTrainedModel):
 
         return embs, pad_masks, att_masks, adarms_cond
 
+    def paligemma_with_expert_forward(
+        self,
+        inputs_embeds: list[torch.FloatTensor],
+        attention_mask: torch.Tensor,
+        position_ids: torch.LongTensor,
+        adarms_cond: list[torch.Tensor] = [None, None],
+    ):
+        models = [self.paligemma.language_model, self.gemma_expert.model]
+
+        # Process all layers
+        for layer_idx in range(self.paligemma.config.text_config.num_hidden_layers):
+            query_states = []
+            key_states = []
+            value_states = []
+            gates = []
+            for model_idx, hidden_states in enumerate(inputs_embeds):
+                layer = models[model_idx].layers[layer_idx]
+                hidden_states, gate = layer.input_layernorm(hidden_states, cond=adarms_cond[model_idx])  # noqa: PLW2901
+                gates.append(gate)
+
+                input_shape = hidden_states.shape[:-1]
+                hidden_shape = (*input_shape, -1, layer.self_attn.head_dim)
+                query_state = layer.self_attn.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+                key_state = layer.self_attn.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+                value_state = layer.self_attn.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+                query_states.append(query_state)
+                key_states.append(key_state)
+                value_states.append(value_state)
+
+            # Concatenate and process attention
+            query_states = torch.cat(query_states, dim=2)
+            key_states = torch.cat(key_states, dim=2)
+            value_states = torch.cat(value_states, dim=2)
+
+            dummy_tensor = torch.zeros(
+                query_states.shape[0],
+                query_states.shape[2],
+                query_states.shape[-1],
+                device=query_states.device,
+                dtype=query_states.dtype,
+            )
+            cos, sin = self.paligemma.model.language_model.rotary_emb(dummy_tensor, position_ids)
+            query_states, key_states = apply_rotary_pos_emb(
+                query_states, key_states, cos, sin, unsqueeze_dim=1
+            )
+
+            batch_size = query_states.shape[0]
+            scaling = self.paligemma.language_model.layers[layer_idx].self_attn.scaling
+
+            # Attention computation
+            att_output, _ = eager_attention_forward(
+                self.paligemma.language_model.layers[layer_idx].self_attn,
+                query_states,
+                key_states,
+                value_states,
+                attention_mask,
+                scaling,
+            )
+            # Get head_dim from the current layer, not from the model
+            head_dim = self.paligemma.language_model.layers[layer_idx].self_attn.head_dim
+            att_output = att_output.reshape(batch_size, -1, 1 * 8 * head_dim)
+
+            # Process layer outputs
+            outputs_embeds = []
+            start_pos = 0
+            for model_idx, hidden_states in enumerate(inputs_embeds):
+                layer = models[model_idx].layers[layer_idx]
+                end_pos = start_pos + hidden_states.shape[1]
+
+                if att_output.dtype != layer.self_attn.o_proj.weight.dtype:
+                    att_output = att_output.to(layer.self_attn.o_proj.weight.dtype)
+                out_emb = layer.self_attn.o_proj(att_output[:, start_pos:end_pos])
+
+                # first residual
+                out_emb = hidden_states + out_emb * gates[model_idx]
+                after_first_residual = out_emb.clone()
+                out_emb, gate = layer.post_attention_layernorm(out_emb, cond=adarms_cond[model_idx])
+
+                out_emb = layer.mlp(out_emb)
+                # second residual
+                out_emb = after_first_residual + out_emb * gate
+                outputs_embeds.append(out_emb)
+                start_pos = end_pos
+
+            inputs_embeds = outputs_embeds
+
+        # final norm
+        outputs_embeds = []
+        for model_idx, hidden_states in enumerate(inputs_embeds):
+            out_emb, _ = models[model_idx].norm(hidden_states, cond=adarms_cond[model_idx])
+            outputs_embeds.append(out_emb)
+
+        return [outputs_embeds[0], outputs_embeds[1]]
+
     def forward(self, images, img_masks, lang_tokens, lang_masks, state, actions, noise=None, time=None) -> Tensor:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
 
@@ -450,17 +394,14 @@ class Pi0Model(Pi0PreTrainedModel):
         # Prepare attention masks
         att_2d_masks_4d = prepare_attention_masks_4d(att_2d_masks)
 
-        (_, suffix_out), _ = self.paligemma_with_expert.forward(
+        (_, suffix_out) = self.paligemma_with_expert_forward(
+            inputs_embeds=[prefix_embs, suffix_embs],
             attention_mask=att_2d_masks_4d,
             position_ids=position_ids,
-            past_key_values=None,
-            inputs_embeds=[prefix_embs, suffix_embs],
-            use_cache=False,
             adarms_cond=[None, adarms_cond],
         )
 
-        suffix_out = suffix_out[:, -self.config.action_horizon :]
-        suffix_out = suffix_out.to(dtype=torch.float32)
+        suffix_out = suffix_out[:, -self.config.action_horizon:].to(dtype=torch.float32)
 
         # Final action projection
         v_t = self.action_out_proj(suffix_out)
@@ -484,16 +425,17 @@ class Pi0Model(Pi0PreTrainedModel):
 
         # Compute image and language key value cache
         prefix_att_2d_masks_4d = prepare_attention_masks_4d(prefix_att_2d_masks)
-        assert self.paligemma_with_expert.paligemma.language_model.config._attn_implementation == "eager"  # noqa: SLF001
+        assert self.paligemma.language_model.config._attn_implementation == "eager"  # noqa: SLF001
 
-        _, past_key_values = self.paligemma_with_expert.forward(
+        prefix_output = self.paligemma.language_model.forward(
+            inputs_embeds=prefix_embs,
             attention_mask=prefix_att_2d_masks_4d,
             position_ids=prefix_position_ids,
             past_key_values=None,
-            inputs_embeds=[prefix_embs, None],
             use_cache=True,
-            adarms_cond=[None, None]
+            adarms_cond=None,
         )
+        past_key_values = prefix_output.past_key_values
 
         dt = -1.0 / num_steps
         dt = torch.tensor(dt, dtype=torch.float32, device=device)
@@ -541,20 +483,18 @@ class Pi0Model(Pi0PreTrainedModel):
 
         # Prepare attention masks
         full_att_2d_masks_4d = prepare_attention_masks_4d(full_att_2d_masks)
-        assert self.paligemma_with_expert.gemma_expert.model.config._attn_implementation == "eager"  # noqa: SLF001
+        assert self.gemma_expert.model.config._attn_implementation == "eager"  # noqa: SLF001
 
-        outputs_embeds, _ = self.paligemma_with_expert.forward(
+        suffix_output = self.gemma_expert.model.forward(
+            inputs_embeds=suffix_embs,
             attention_mask=full_att_2d_masks_4d,
             position_ids=position_ids,
             past_key_values=past_key_values,
-            inputs_embeds=[None, suffix_embs],
             use_cache=False,
-            adarms_cond=[None, adarms_cond],
+            adarms_cond=adarms_cond,
         )
+        suffix_out = suffix_output.last_hidden_state[:, -self.config.action_horizon:].to(dtype=torch.float32)
 
-        suffix_out = outputs_embeds[1]
-        suffix_out = suffix_out[:, -self.config.action_horizon :]
-        suffix_out = suffix_out.to(dtype=torch.float32)
         return self.action_out_proj(suffix_out)
 
 
