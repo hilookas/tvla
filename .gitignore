@@ -1,8 +1,11 @@
 *.egg-info
 lerobot/
-transformers/
+transformers*/
 LIBERO
-logs/
+logs*/
 __pycache__/
 tvla-data*
 PyAV
+openpi
+src.tgz
+pi05_libero_finetuned_transformers/

@@ -2,34 +2,38 @@ import tvla.models.gemma # Register ours
 import tvla.models.paligemma # Register ours
 
 from tvla.models.pi0.modeling_pi0 import Pi0Model
-from tvla.models.pi0.configuration_pi0 import Pi0Config
-
-model_id = "/home/ubuntu/tvla/pi05_libero_finetuned_transformers"
-
-config = Pi0Config.from_pretrained(model_id)
-
-model = Pi0Model.from_pretrained(
-    model_id,
-    # dtype=torch.bfloat16,
-    # device_map="auto",
-)
 
 from tvla.models.paligemma.processing_paligemma import PaliGemmaProcessor
 
-processor = PaliGemmaProcessor.from_pretrained("google/paligemma-3b-pt-224")
-
 from safetensors.torch import load_file as safe_load_file
-
-state_normalizer_state_dict = safe_load_file("/home/ubuntu/.cache/huggingface/hub/models--lerobot--pi05_libero_finetuned/snapshots/d8419fc249cbb1f29b0c528f05c0d2fe50f46855/policy_preprocessor_step_2_normalizer_processor.safetensors")
-action_unnormalizer_state_dict = safe_load_file("/home/ubuntu/.cache/huggingface/hub/models--lerobot--pi05_libero_finetuned/snapshots/d8419fc249cbb1f29b0c528f05c0d2fe50f46855/policy_postprocessor_step_0_unnormalizer_processor.safetensors")
 
 from tvla.envs.libero.env import LiberoEnv, get_camera_extrinsic_matrix
 from tvla.envs.libero.transform import uea2libero_state, libero2uea_action, quat2axisangle
+
 import torch
 import numpy as np
 
 import tqdm
 import logging
+
+from collections import deque
+
+model = Pi0Model.from_pretrained(
+    "/home/ubuntu/tvla/pi05_libero_finetuned_transformers",
+    # dtype=torch.bfloat16,
+    # device_map="auto",
+)
+
+processor = PaliGemmaProcessor.from_pretrained("google/paligemma-3b-pt-224")
+
+state_normalizer_state_dict = safe_load_file("/home/ubuntu/.cache/huggingface/hub/models--lerobot--pi05_libero_finetuned/snapshots/d8419fc249cbb1f29b0c528f05c0d2fe50f46855/policy_preprocessor_step_2_normalizer_processor.safetensors")
+action_unnormalizer_state_dict = safe_load_file("/home/ubuntu/.cache/huggingface/hub/models--lerobot--pi05_libero_finetuned/snapshots/d8419fc249cbb1f29b0c528f05c0d2fe50f46855/policy_postprocessor_step_0_unnormalizer_processor.safetensors")
+
+state_norm_mean = state_normalizer_state_dict["observation.state.mean"].numpy()
+state_norm_std = state_normalizer_state_dict["observation.state.std"].numpy()
+
+action_norm_mean = action_unnormalizer_state_dict["action.mean"].numpy()
+action_norm_std = action_unnormalizer_state_dict["action.std"].numpy()
 
 num_trials_per_task = 10
 
@@ -45,28 +49,24 @@ for task_suite_name, task_id in tqdm.tqdm(LiberoEnv.list_tasks("libero_object"))
 
         obs = libero_env.reset(episode_idx)
 
-        from collections import deque
         n_action_steps = 50
         action_queue = deque(maxlen=n_action_steps)
 
         try:
             while True:
-                with torch.inference_mode():
-                    # Action queue logic for n_action_steps > 1
-                    if len(action_queue) == 0:
+                # Action queue logic for n_action_steps > 1
+                if len(action_queue) == 0:
+                    with torch.inference_mode():
                         state = None # for pi05
 
-                        state_tensor = (torch.tensor(obs["original_state"]).unsqueeze(0) - state_normalizer_state_dict["observation.state.mean"]) / state_normalizer_state_dict["observation.state.std"]
-
                         # State (Pi05)
-                        state_np = state_tensor.cpu().numpy()[0]
+                        state_np = (obs["original_state"] - state_norm_mean) / state_norm_std
 
                         max_state_dim = 32
                         padded_state_np = np.zeros(max_state_dim)
                         padded_state_np[:state_np.shape[0]] = state_np
 
-                        task = obs["instruction"]
-                        cleaned_text = task.strip().replace("_", " ").replace("\n", " ")
+                        cleaned_text = obs["instruction"].strip().replace("_", " ").replace("\n", " ")
                         state_str = " ".join(map(str, np.digitize(padded_state_np, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1))
                         full_prompt = f"Task: {cleaned_text}, State: {state_str};\nAction: "
 
@@ -101,16 +101,14 @@ for task_suite_name, task_id in tqdm.tqdm(LiberoEnv.list_tasks("libero_object"))
 
                         # images, img_masks, lang_tokens, lang_masks, state = preprocess_observation_pytorch(observation, train=False) # train=True when training
                         action = model.sample_action(images, img_masks, lang_tokens, lang_masks, state)
-                        original_action_dim = 7
 
                         # Transpose to get shape (n_action_steps, action_dim)
-                        action_queue.extend(action[:, :, :original_action_dim].squeeze(0))
+                        original_action_dim = 7
+                        action_queue.extend(action[:, :, :original_action_dim].squeeze(0).numpy())
 
-                    action_model = action_queue.popleft()
+                action_model = action_queue.popleft()
 
-                action = action_model * action_unnormalizer_state_dict["action.std"] + action_unnormalizer_state_dict["action.mean"]
-
-                action = action.cpu().numpy()
+                action = action_model * action_norm_std + action_norm_mean
 
                 action = {
                     "original_action": action,

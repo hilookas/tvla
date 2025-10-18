@@ -17,6 +17,9 @@ def main():
     with safe_open(input_path + "/" + "model.safetensors", framework="pt") as f:
         metadata = f.metadata()
 
+    # Change the metadata format to "pt"
+    metadata["format"] = "pt"
+
     # Load the safetensors
     state_dict = safe_load_file(input_path + "/" + "model.safetensors")
 
@@ -35,9 +38,6 @@ def main():
         else:
             new_key = k
         new_state_dict[new_key] = v
-
-    # Change the metadata format to "pt"
-    metadata["format"] = "pt"
 
     # Save the new safetensors file in the output_path directory
     out_path = output_path + "/" + "model.safetensors"
